@@ -1,27 +1,29 @@
 # app/routers/note.py
 import json
 import os
+import re
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, validator, field_validator
 from dataclasses import asdict
 
 from app.db.video_task_dao import get_task_by_video
 from app.enmus.exception import NoteErrorEnum
 from app.enmus.note_enums import DownloadQuality
+from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.note import NoteError
+from app.services.dify_client import DifyConfig, DifyError, DifyKnowledgeClient
 from app.services.note import NoteGenerator, logger
+from app.services.rag_service import build_rag_document_name, build_rag_document_text_with_note
 from app.utils.response import ResponseWrapper as R
 from app.utils.url_parser import extract_video_id
 from app.validators.video_url_validator import is_supported_video_url
-from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 import httpx
-from app.enmus.task_status_enums import TaskStatus
 
 # from app.services.downloader import download_raw_audio
 # from app.services.whisperer import transcribe_audio
@@ -52,7 +54,12 @@ class VideoRequest(BaseModel):
 
     @field_validator("video_url")
     def validate_supported_url(cls, v):
-        url = str(v)
+        url = str(v).strip()
+        # Allow users to paste "【title】 https://..." and similar formats.
+        m = re.search(r"https?://\\S+", url, flags=re.IGNORECASE)
+        if m:
+            url = m.group(0)
+            url = re.sub(r"[\\]\\)）】》>，,。\\.！!？\\?\"']+$", "", url)
         parsed = urlparse(url)
         if parsed.scheme in ("http", "https"):
             # 是网络链接，继续用原有平台校验
@@ -60,17 +67,35 @@ class VideoRequest(BaseModel):
                 raise NoteError(code=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.code,
                                 message=NoteErrorEnum.PLATFORM_NOT_SUPPORTED.message)
 
-        return v
+        return url
 
 
 NOTE_OUTPUT_DIR = os.getenv("NOTE_OUTPUT_DIR", "note_results")
 UPLOAD_DIR = "uploads"
 
 
-def save_note_to_file(task_id: str, note):
+def _atomic_merge_json_file(path: Path, patch: dict[str, Any]) -> None:
+    existing: dict[str, Any] = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    existing.update(patch)
+
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def save_note_to_file(task_id: str, note, extra: Optional[dict[str, Any]] = None):
     os.makedirs(NOTE_OUTPUT_DIR, exist_ok=True)
+    payload = asdict(note)
+    if extra:
+        payload.update(extra)
     with open(os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json"), "w", encoding="utf-8") as f:
-        json.dump(asdict(note), f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def run_note_task(task_id: str, video_url: str, platform: str, quality: DownloadQuality,
@@ -102,7 +127,48 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
     if not note or not note.markdown:
         logger.warning(f"任务 {task_id} 执行失败，跳过保存")
         return
+
+    # Always save note results locally first.
     save_note_to_file(task_id, note)
+
+    # Upload note + transcript to Dify Knowledge Base for RAG.
+    try:
+        dify_cfg = DifyConfig.from_env()
+        client = DifyKnowledgeClient(dify_cfg)
+        try:
+            doc_name = build_rag_document_name(note.audio_meta, platform)
+            doc_text = build_rag_document_text_with_note(
+                audio=note.audio_meta,
+                transcript=note.transcript,
+                platform=platform,
+                source_url=video_url,
+                note_markdown=note.markdown,
+            )
+            resp = client.create_document_by_text(name=doc_name, text=doc_text, doc_language="Chinese Simplified")
+        finally:
+            client.close()
+
+        document = resp.get("document") or {}
+        dify_info = {
+            "base_url": dify_cfg.base_url,
+            "dataset_id": dify_cfg.dataset_id,
+            "document_id": document.get("id"),
+            "batch": resp.get("batch"),
+        }
+
+        result_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.json"
+        status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+        _atomic_merge_json_file(result_path, {"dify": dify_info})
+        _atomic_merge_json_file(status_path, {"dify": dify_info})
+        logger.info(f"Uploaded to Dify (task_id={task_id}, document_id={dify_info.get('document_id')})")
+    except DifyError as exc:
+        status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+        _atomic_merge_json_file(status_path, {"dify_error": str(exc)})
+        logger.error(f"Dify upload failed (task_id={task_id}): {exc}")
+    except Exception as exc:
+        status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+        _atomic_merge_json_file(status_path, {"dify_error": str(exc)})
+        logger.error(f"Dify upload failed (task_id={task_id}): {exc}", exc_info=True)
 
 
 
@@ -171,16 +237,35 @@ def get_task_status(task_id: str):
 
         status = status_content.get("status")
         message = status_content.get("message", "")
+        dify_info = status_content.get("dify")
+        dify_error = status_content.get("dify_error")
 
         if status == TaskStatus.SUCCESS.value:
             # 成功状态的话，继续读取最终笔记内容
             if os.path.exists(result_path):
                 with open(result_path, "r", encoding="utf-8") as rf:
                     result_content = json.load(rf)
+
+                # If we have a Dify batch id, attach real-time indexing status.
+                dify_info = dify_info or result_content.get("dify")
+                dify_indexing = None
+                if isinstance(dify_info, dict) and dify_info.get("batch"):
+                    try:
+                        dify_cfg = DifyConfig.from_env()
+                        dify_client = DifyKnowledgeClient(dify_cfg)
+                        try:
+                            dify_indexing = dify_client.get_batch_indexing_status(batch=str(dify_info["batch"]))
+                        finally:
+                            dify_client.close()
+                    except Exception as exc:
+                        dify_error = dify_error or str(exc)
                 return R.success({
                     "status": status,
                     "result": result_content,
                     "message": message,
+                    "dify": dify_info,
+                    "dify_indexing": dify_indexing,
+                    "dify_error": dify_error,
                     "task_id": task_id
                 })
             else:
@@ -198,6 +283,8 @@ def get_task_status(task_id: str):
         return R.success({
             "status": status,
             "message": message,
+            "dify": dify_info,
+            "dify_error": dify_error,
             "task_id": task_id
         })
 
@@ -208,6 +295,7 @@ def get_task_status(task_id: str):
         return R.success({
             "status": TaskStatus.SUCCESS.value,
             "result": result_content,
+            "dify": result_content.get("dify"),
             "task_id": task_id
         })
 

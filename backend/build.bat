@@ -27,10 +27,19 @@ REM --- 核心修改部分开始 ---
 
 REM 步骤 1: 为了避免 PyInstaller 的解析歧义，我们先手动复制文件
 echo 为打包准备 .env 文件...
-copy .env.example backend\.env
+set "TEMP_ENV=0"
+if not exist .env (
+  echo æœªæ£€æµ‹åˆ°.envï¼Œç”¨ .env.example åˆ›å»ºä¸´æ—¶ .env...
+  copy /Y .env.example .env >nul
+  set "TEMP_ENV=1"
+) else (
+  echo æ£€æµ‹åˆ°.envï¼Œå°†æ‰“åŒ…å½“å‰ .env...
+)
 
 REM 步骤 2: 执行 PyInstaller 打包，直接添加已存在的 .env 文件
 echo 开始 PyInstaller 打包...
+REM Copy .env into backend/.env to match --specpath backend behavior in PyInstaller
+copy /Y .env backend\.env >nul
 pyinstaller ^
   -y ^
   --name BiliNoteBackend ^
@@ -45,9 +54,19 @@ pyinstaller ^
   --add-data ".env;." ^
   backend\main.py
 
+if errorlevel 1 (
+  echo PyInstaller failed.
+  del backend\.env >nul 2>nul
+  if "%TEMP_ENV%"=="1" del .env >nul 2>nul
+  exit /b 1
+)
+
 REM 步骤 3: 清理在项目根目录创建的临时 .env 文件
 echo 清理临时的 .env 文件...
-del backend\.env
+del backend\.env >nul 2>nul
+if "%TEMP_ENV%"=="1" (
+  del .env
+)
 
 REM --- 核心修改部分结束 ---
 

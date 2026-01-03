@@ -20,7 +20,14 @@ echo "Detected target triple: $TARGET_TRIPLE"
 
 # 步骤 1: 为了避免 PyInstaller 的解析歧义，我们先手动复制文件
 echo "为打包准备 .env 文件..."
-cp .env.example backend/.env
+TEMP_ENV=0
+if [ ! -f .env ]; then
+  echo "No .env found, creating a temporary one from .env.example..."
+  cp .env.example .env
+  TEMP_ENV=1
+else
+  echo "Found .env, bundling it into the backend sidecar..."
+fi
 
 # 步骤 2: PyInstaller 打包，直接添加已存在的 .env 文件
 echo "开始 PyInstaller 打包..."
@@ -39,7 +46,9 @@ pyinstaller \
 
 # 步骤 3: 清理在项目根目录创建的临时 .env 文件
 echo "清理临时的 .env 文件..."
-rm backend/.env
+if [ "$TEMP_ENV" = "1" ]; then
+  rm .env
+fi
 
 # --- 核心修改部分结束 ---
 
@@ -54,4 +63,3 @@ echo "打包后的目录内容："
 ls -l ./BillNote_frontend/src-tauri/bin/BiliNoteBackend
 
 echo "请检查 src-tauri/bin/BiliNoteBackend 目录，确认其中包含了名为 .env 的【文件】。"
-

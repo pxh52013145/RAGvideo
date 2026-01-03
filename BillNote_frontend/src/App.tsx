@@ -1,5 +1,5 @@
 import './App.css'
-import { HomePage } from './pages/HomePage/Home.tsx'
+import KnowledgePage from '@/pages/KnowledgePage/Knowledge'
 import { useTaskPolling } from '@/hooks/useTaskPolling.ts'
 import SettingPage from './pages/SettingPage/index.tsx'
 import { BrowserRouter, Navigate, Routes } from 'react-router-dom'
@@ -12,13 +12,14 @@ import ProviderForm from '@/components/Form/modelForm/Form.tsx'
 import StepBar from '@/pages/HomePage/components/StepBar.tsx'
 import Downloading from '@/components/Lottie/download.tsx'
 import Prompt from '@/pages/SettingPage/Prompt.tsx'
-import AboutPage from '@/pages/SettingPage/about.tsx'
 import Downloader from '@/pages/SettingPage/Downloader.tsx'
 import DownloaderForm from '@/components/Form/DownloaderForm/Form.tsx'
 import { useEffect } from 'react'
 import { systemCheck } from '@/services/system.ts'
 import { useCheckBackend } from '@/hooks/useCheckBackend.ts'
 import BackendInitDialog from '@/components/BackendInitDialog'
+import RagPage from '@/pages/RagPage/Rag.tsx'
+import AppShellLayout from '@/layouts/AppShellLayout'
 
 function App() {
   useTaskPolling(3000) // 每 3 秒轮询一次
@@ -46,7 +47,11 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />}>
-            <Route index element={<HomePage />} />
+            <Route index element={<Navigate to="rag" replace />} />
+            <Route element={<AppShellLayout />}>
+              <Route path="rag" element={<RagPage />} />
+              <Route path="note" element={<KnowledgePage />} />
+            </Route>
             <Route path="settings" element={<SettingPage />}>
               <Route index element={<Navigate to="model" replace />} />
               <Route path="model" element={<Model />}>
@@ -56,7 +61,6 @@ function App() {
               <Route path="download" element={<Downloader />}>
                 <Route path=":id" element={<DownloaderForm />} />
               </Route>
-              <Route path="about" element={<AboutPage />}></Route>
               <Route path="*" element={<NotFoundPage />} />
             </Route>
             <Route path="*" element={<NotFoundPage />} />

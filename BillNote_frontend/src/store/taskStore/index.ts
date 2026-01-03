@@ -5,7 +5,17 @@ import { v4 as uuidv4 } from 'uuid'
 import toast from 'react-hot-toast'
 
 
-export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILD'
+export type TaskStatus =
+  | 'PENDING'
+  | 'PARSING'
+  | 'DOWNLOADING'
+  | 'TRANSCRIBING'
+  | 'SUMMARIZING'
+  | 'FORMATTING'
+  | 'SAVING'
+  | 'SUCCESS'
+  | 'FAILED'
+  | string
 
 export interface AudioMeta {
   cover_url: string
@@ -39,32 +49,47 @@ export interface Markdown {
 
 export interface Task {
   id: string
+  platform: string
   markdown: string|Markdown [] //为了兼容之前的笔记
   transcript: Transcript
   status: TaskStatus
   audioMeta: AudioMeta
+  dify?: {
+    base_url?: string
+    dataset_id?: string
+    document_id?: string
+    batch?: string
+  }
+  dify_indexing?: any
+  dify_error?: string
   createdAt: string
   formData: {
     video_url: string
-    link: undefined | boolean
-    screenshot: undefined | boolean
+    link?: boolean
+    screenshot?: boolean
     platform: string
     quality: string
     model_name: string
     provider_id: string
+    format?: string[]
+    style?: string
+    extras?: string
+    video_understanding?: boolean
+    video_interval?: number
+    grid_size?: number[]
   }
 }
 
 interface TaskStore {
   tasks: Task[]
   currentTaskId: string | null
-  addPendingTask: (taskId: string, platform: string) => void
+  addPendingTask: (taskId: string, platform: string, formData: Task['formData']) => void
   updateTaskContent: (id: string, data: Partial<Omit<Task, 'id' | 'createdAt'>>) => void
-  removeTask: (id: string) => void
+  removeTask: (id: string) => Promise<void>
   clearTasks: () => void
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
-  retryTask: (id: string) => void
+  retryTask: (id: string, payload?: Task['formData']) => Promise<void>
 }
 
 export const useTaskStore = create<TaskStore>()(
@@ -109,8 +134,6 @@ export const useTaskStore = create<TaskStore>()(
           set(state => ({
             tasks: state.tasks.map(task => {
               if (task.id !== id) return task
-
-              if (task.status === 'SUCCESS' && data.status === 'SUCCESS') return task
 
               // 如果是 markdown 字符串，封装为版本
               if (typeof data.markdown === 'string') {
@@ -211,6 +234,14 @@ export const useTaskStore = create<TaskStore>()(
     }),
     {
       name: 'task-storage',
+      // Persist tasks only; don't persist which task is "currently selected" so the app opens in "new task" mode.
+      partialize: state => ({ tasks: state.tasks }),
+      // Backward-compatible: older localStorage may still contain currentTaskId; always clear it on hydrate.
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...(persistedState as any),
+        currentTaskId: null,
+      }),
     }
   )
 )

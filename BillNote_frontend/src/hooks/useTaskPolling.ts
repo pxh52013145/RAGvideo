@@ -6,8 +6,6 @@ import toast from 'react-hot-toast'
 export const useTaskPolling = (interval = 3000) => {
   const tasks = useTaskStore(state => state.tasks)
   const updateTaskContent = useTaskStore(state => state.updateTaskContent)
-  const updateTaskStatus = useTaskStore(state => state.updateTaskStatus)
-  const removeTask = useTaskStore(state => state.removeTask)
 
   const tasksRef = useRef(tasks)
 
@@ -18,33 +16,51 @@ export const useTaskPolling = (interval = 3000) => {
 
   useEffect(() => {
     const timer = setInterval(async () => {
-      const pendingTasks = tasksRef.current.filter(
-        task => task.status != 'SUCCESS' && task.status != 'FAILED'
-      )
+      const isDifyIndexingCompleted = (payload: any) => {
+        const docs = payload?.data
+        if (!Array.isArray(docs) || docs.length === 0) return false
+        return docs.every(d => typeof d === 'object' && d && d.indexing_status === 'completed')
+      }
+
+      const pendingTasks = tasksRef.current.filter(task => {
+        if (task.status === 'FAILED') return false
+        if (task.status !== 'SUCCESS') return true
+        if (task.dify_error) return false
+        if (!task.dify?.batch) {
+          // Grace period: note may be done while Dify upload is still in-flight.
+          const ageMs = Date.now() - new Date(task.createdAt).getTime()
+          return ageMs < 2 * 60 * 1000
+        }
+        return !isDifyIndexingCompleted(task.dify_indexing)
+      })
 
       for (const task of pendingTasks) {
         try {
           console.log('🔄 正在轮询任务：', task.id)
           const res = await get_task_status(task.id)
-          const { status } = res
+          const status = res?.status
+          if (!status) continue
 
-          if (status && status !== task.status) {
-            if (status === 'SUCCESS') {
-              const { markdown, transcript, audio_meta } = res.result
-              toast.success('笔记生成成功')
-              updateTaskContent(task.id, {
-                status,
-                markdown,
-                transcript,
-                audioMeta: audio_meta,
-              })
-            } else if (status === 'FAILED') {
-              updateTaskContent(task.id, { status })
-              console.warn(`⚠️ 任务 ${task.id} 失败`)
-            } else {
-              updateTaskContent(task.id, { status })
-            }
+          const patch = {
+            status,
+            dify: res.dify,
+            dify_indexing: res.dify_indexing,
+            dify_error: res.dify_error,
           }
+
+          if (status === 'SUCCESS' && task.status !== 'SUCCESS') {
+            const { markdown, transcript, audio_meta } = res.result || {}
+            toast.success('笔记生成成功')
+            updateTaskContent(task.id, {
+              ...patch,
+              markdown,
+              transcript,
+              audioMeta: audio_meta,
+            })
+            continue
+          }
+
+          updateTaskContent(task.id, patch)
         } catch (e) {
           console.error('❌ 任务轮询失败：', e)
           // toast.error(`生成失败 ${e.message || e}`)

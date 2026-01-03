@@ -1,14 +1,13 @@
 import os
+import shutil
 import subprocess
+import uuid
 from abc import ABC
 from typing import Optional
 
 from app.downloaders.base import Downloader
 from app.enmus.note_enums import DownloadQuality
 from app.models.audio_model import AudioDownloadResult
-import os
-import subprocess
-
 from app.utils.video_helper import save_cover_to_static
 
 
@@ -16,6 +15,24 @@ class LocalDownloader(Downloader, ABC):
     def __init__(self):
 
         super().__init__()
+
+    @staticmethod
+    def _needs_safe_path(input_path: str) -> bool:
+        file_name = os.path.basename(input_path)
+        try:
+            file_name.encode("ascii")
+            return False
+        except UnicodeEncodeError:
+            return True
+
+    @staticmethod
+    def _copy_to_safe_path(input_path: str) -> str:
+        ext = os.path.splitext(input_path)[1] or ".mp4"
+        safe_dir = os.path.join(os.getcwd(), "uploads", "_safe")
+        os.makedirs(safe_dir, exist_ok=True)
+        safe_path = os.path.join(safe_dir, f"{uuid.uuid4().hex}{ext}")
+        shutil.copy2(input_path, safe_path)
+        return safe_path
 
 
     def extract_cover(self, input_path: str, output_dir: Optional[str] = None) -> str:
@@ -118,8 +135,19 @@ class LocalDownloader(Downloader, ABC):
         file_name = os.path.basename(video_url)
         title, _ = os.path.splitext(file_name)
         print(title, file_name,video_url)
-        file_path=self.convert_to_mp3(video_url)
-        cover_path = self.extract_cover(video_url)
+
+        working_path = video_url
+        try:
+            file_path = self.convert_to_mp3(working_path)
+            cover_path = self.extract_cover(working_path)
+        except RuntimeError:
+            # Some Windows ffmpeg builds may fail to open non-ascii filenames.
+            # Fallback: copy to an ascii-only path then retry.
+            if not self._needs_safe_path(video_url):
+                raise
+            working_path = self._copy_to_safe_path(video_url)
+            file_path = self.convert_to_mp3(working_path)
+            cover_path = self.extract_cover(working_path)
         cover_url = save_cover_to_static(cover_path)
 
         print('file——path',file_path)

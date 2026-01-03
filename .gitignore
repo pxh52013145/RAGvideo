@@ -322,3 +322,12 @@ cython_debug/
 /backend/config/*
 /BiliNote_frontend/.idea/*
 /BiliNote_frontend/src-tauri/bin/
+
+# Project runtime outputs (local)
+/demo/
+/note_results/
+/rag_results/
+/uploads/
+/static/
+/config/
+/bili_note.db

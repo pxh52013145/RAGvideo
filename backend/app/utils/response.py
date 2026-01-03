@@ -1,10 +1,4 @@
 from fastapi.responses import JSONResponse
-from app.utils.status_code import StatusCode
-from pydantic import BaseModel
-from typing import Optional, Any
-
-
-from fastapi.responses import JSONResponse
 
 class ResponseWrapper:
     @staticmethod
@@ -13,7 +7,7 @@ class ResponseWrapper:
             "code": code,
             "msg": msg,
             "data": data
-        })
+        }, media_type="application/json; charset=utf-8")
 
     @staticmethod
     def error(msg="error", code=500, data=None):
@@ -21,4 +15,4 @@ class ResponseWrapper:
             "code": code,
             "msg": str(msg),
             "data": data
-        })
+        }, media_type="application/json; charset=utf-8")

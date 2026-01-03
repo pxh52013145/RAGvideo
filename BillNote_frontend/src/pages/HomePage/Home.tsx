@@ -35,9 +35,9 @@ export const HomePage: FC = () => {
   // }, [tasks]);
   return (
     <HomeLayout
-      NoteForm={<NoteForm />}
-      Preview={<MarkdownViewer status={status} />}
-      History={<History />}
+      Left={<NoteForm />}
+      Center={<History />}
+      Right={<MarkdownViewer status={status} />}
     />
   )
 }

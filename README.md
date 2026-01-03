@@ -1,147 +1,118 @@
-<div style="display: flex; justify-content: center; align-items: center; gap: 10px;
-">
-    <p align="center">
-  <img src="./doc/icon.svg" alt="BiliNote Banner" width="50" height="50"  />
-</p>
-<h1 align="center" > BiliNote v1.8.1</h1>
-</div>
+# RAG 视频（RAGVideo）
 
-<p align="center"><i>AI 视频笔记生成工具 让 AI 为你的视频做笔记</i></p>
+基于 BiliNote 改造的「RAG 视频知识库」项目：视频转写与笔记生成后，自动写入 Dify Knowledge（Dataset），再通过 Dify App 完成对话式检索与问答，并返回引用片段（含时间戳）。
 
-<p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-blue.svg" />
-  <img src="https://img.shields.io/badge/frontend-react-blue" />
-  <img src="https://img.shields.io/badge/backend-fastapi-green" />
-  <img src="https://img.shields.io/badge/GPT-openai%20%7C%20deepseek%20%7C%20qwen-ff69b4" />
-  <img src="https://img.shields.io/badge/docker-compose-blue" />
-  <img src="https://img.shields.io/badge/status-active-success" />
-  <img src="https://img.shields.io/github/stars/jefferyhcool/BiliNote?style=social" />
-</p>
+## 架构说明
 
+- 本项目后端（FastAPI）：视频下载/解析 → 转写 → 生成 Markdown 笔记 → 将“笔记 + 带时间戳的转写”写入 Dify Dataset → 代理 Dify Chat API
+- 本项目前端（Vite/React + 可选 Tauri）：入库（通过“生成笔记”触发）/任务状态/对话与引用展示
+- Dify：负责知识库向量检索、RAG/工作流、模型配置与 API Key 管理
 
+## 运行前准备
 
-## ✨ 项目简介
+- Docker Desktop（用于自建 Dify；如果你有现成的 Dify，可跳过）
+- FFmpeg（必须，确保 `ffmpeg -version` 可用）
+- Python 3.10+（建议 3.10/3.11，64-bit）
+- Node.js 18+（建议 18/20）+ pnpm（建议 `corepack enable`）
 
-BiliNote 是一个开源的 AI 视频笔记助手，支持通过哔哩哔哩、YouTube、抖音等视频链接，自动提取内容并生成结构清晰、重点明确的 Markdown 格式笔记。支持插入截图、原片跳转等功能。
-## 📝 使用文档
-详细文档可以查看[这里](https://docs.bilinote.app/)
+> 不强制安装 Ollama：Dify 的模型提供商可以选 DeepSeek / OpenAI / 其它兼容 OpenAI 的 API。
 
-## 体验地址
-可以通过访问 [这里](https://www.bilinote.app/) 进行体验，速度略慢，不支持长视频。
-## 📦 Windows 打包版
-本项目提供了 Windows 系统的 exe 文件，可在[release](https://github.com/JefferyHcool/BiliNote/releases/tag/v1.1.1)进行下载。**注意一定要在没有中文路径的环境下运行。**
+## 1) 自建 Dify（一次性）
 
+按 Dify 官方自建文档用 Docker 启动即可（建议使用 Dify 的官方 docker-compose 部署方式）。
 
-## 🔧 功能特性
+启动后访问 Dify 控制台，完成两件事：
 
-- 支持多平台：Bilibili、YouTube、本地视频、抖音（后续会加入更多平台）
-- 支持返回笔记格式选择
-- 支持笔记风格选择
-- 支持多模态视频理解
-- 支持多版本记录保留
-- 支持自行配置 GPT 大模型
-- 本地模型音频转写（支持 Fast-Whisper）
-- GPT 大模型总结视频内容
-- 自动生成结构化 Markdown 笔记
-- 可选插入截图（自动截取）
-- 可选内容跳转链接（关联原视频）
-- 任务记录与历史回看
+1. **创建 Dataset（知识库）**：Knowledge → New Dataset
+2. **创建 App（用于对话）**：Studio → New App（Chat/Workflow 均可），打开检索能力并发布（Publish）
 
-## 📸 截图预览
-![screenshot](./doc/image1.png)
-![screenshot](./doc/image3.png)
-![screenshot](./doc/image.png)
-![screenshot](./doc/image4.png)
-![screenshot](./doc/image5.png)
+## 2) 准备 Dify 配置（必须）
 
-## 🚀 快速开始
+本项目需要 4 个值（都在 Dify 控制台可找到）：
 
-### 1. 克隆仓库
+- `DIFY_BASE_URL`：你的 Dify 地址（不要带 `/v1`），例如 `http://localhost` 或 `https://xxxx.trycloudflare.com`
+- `DIFY_DATASET_ID`：Dataset 的 UUID（可从 Dataset 页面 URL 里取）
+- `DIFY_SERVICE_API_KEY`：用于写入 Knowledge 的 Key（常见前缀是 `dataset-`）
+- `DIFY_APP_API_KEY`：用于对话检索的 App Key（常见前缀是 `app-`）
 
-```bash
-git clone https://github.com/JefferyHcool/BiliNote.git
-cd BiliNote
-mv .env.example .env
+## 3) 配置项目 `.env`
+
+在项目根目录：
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
 ```
 
-### 2. 启动后端（FastAPI）
+至少填写/确认：
 
-```bash
-cd backend
-pip install -r requirements.txt
-python main.py
+- `DIFY_BASE_URL`
+- `DIFY_DATASET_ID`
+- `DIFY_SERVICE_API_KEY`
+- `DIFY_APP_API_KEY`
+- （本地开发建议）`VITE_DEV_PROXY_TARGET=http://127.0.0.1:8483`
+
+## 4) 启动后端（开发模式）
+
+建议在**项目根目录**运行（确保读取根目录的 `.env`）：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r backend\requirements.txt
+python backend\main.py
 ```
 
-### 3. 启动前端（Vite + React）
+验证：`http://127.0.0.1:8483/docs`
 
-```bash
+## 5) 启动前端（开发模式）
+
+另开一个终端：
+
+```powershell
 cd BillNote_frontend
+corepack enable
 pnpm install
 pnpm dev
 ```
 
-访问：`http://localhost:5173`
+打开：`http://localhost:3015`
 
-## ⚙️ 依赖说明
-### 🎬 FFmpeg
-本项目依赖 ffmpeg 用于音频处理与转码，必须安装：
-```bash
-# Mac (brew)
-brew install ffmpeg
+> `pnpm dev` 是 Web 开发模式，不会弹桌面窗口；桌面端见第 7 节。
 
-# Ubuntu / Debian
-sudo apt install ffmpeg
+## 6) 使用方式（RAG 入库 & 问答）
 
-# Windows
-# 请从官网下载安装：https://ffmpeg.org/download.html
+1. 在界面里选择/填写视频来源（B 站/YouTube/本地视频等），点击 **生成笔记**
+2. 任务完成后会：
+   - 在本地保存 Markdown 笔记到 `note_results/`
+   - 自动把“笔记 + 带 `[TIME=mm:ss-mm:ss]` 标记的转写内容”写入 Dify Dataset（用于 RAG 检索）
+3. 切到 **RAG 问答** 页面直接提问：右侧会显示引用片段（包含时间戳，可用于定位片段）
+
+## 7) （可选）桌面端打包（Tauri）
+
+前置：安装 Rust + VS Build Tools（Desktop C++）。
+
+1. 构建后端 sidecar：
+
+```powershell
+cd backend
+.\build.bat
 ```
-> ⚠️ 若系统无法识别 ffmpeg，请将其加入系统环境变量 PATH
 
-### 🚀 CUDA 加速（可选）
-若你希望更快地执行音频转写任务，可使用具备 NVIDIA GPU 的机器，并启用 fast-whisper + CUDA 加速版本：
+2. 打包前端：
 
-具体 `fast-whisper` 配置方法，请参考：[fast-whisper 项目地址](http://github.com/SYSTRAN/faster-whisper#requirements)
+```powershell
+cd ..\BillNote_frontend
+pnpm tauri build
+```
 
-### 🐳 使用 Docker 一键部署
+产物在 `BillNote_frontend\src-tauri\target\release\`（或对应 profile 目录）
 
-确保你已安装 Docker 和 Docker Compose：
+或者 `pnpm tauri dev启动tauri桌面端`。
 
-[docker 部署](https://github.com/JefferyHcool/bilinote-deploy/blob/master/README.md)
+## 常见问题
 
-## 🧠 TODO
-
-- [x] 支持抖音及快手等视频平台
-- [x] 支持前端设置切换 AI 模型切换、语音转文字模型
-- [x] AI 摘要风格自定义（学术风、口语风、重点提取等）
-- [ ] 笔记导出为 PDF / Word / Notion
-- [x] 加入更多模型支持
-- [x] 加入更多音频转文本模型支持
-
-### Contact and Join-联系和加入社区
-- BiliNote 交流QQ群：785367111
-- BiliNote 交流微信群:
-  
-  <img src="doc/wechat.png" alt="wechat" style="zoom:33%;" />
-
-
-
-## 🔎代码参考
-- 本项目中的 `抖音下载功能` 部分代码参考引用自：[Evil0ctal/Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)
-
-## 📜 License
-
-MIT License
-
----
-
-💬 你的支持与反馈是我持续优化的动力！欢迎 PR、提 issue、Star ⭐️
-## Buy Me a Coffee / 捐赠
-如果你觉得项目对你有帮助，考虑支持我一下吧
-<div style='display:inline;'>
-    <img width='30%' src='https://common-1304618721.cos.ap-chengdu.myqcloud.com/8986c9eb29c356a0cfa3d470c23d3b6.jpg'/>
-    <img width='30%' src='https://common-1304618721.cos.ap-chengdu.myqcloud.com/2a049ea298b206bcd0d8b8da3219d6b.jpg'/>
-</div>
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=JefferyHcool/BiliNote&type=Date)](https://www.star-history.com/#JefferyHcool/BiliNote&Date)
+- Dify 报 `Workflow not published`：去 Dify 把 App **Publish** 后再调用
+- Dify 报 `Model ... credentials is not initialized`：去 Dify 的模型提供商里把 LLM/Embedding 配好，并在 App 中选择正确模型
+- FFmpeg 找不到：把 ffmpeg 加入 PATH，或在 `.env` 里填写 `FFMPEG_BIN_PATH=...\\ffmpeg.exe`
+- 中文路径/中文文件名导致处理失败：尽量把项目目录和视频文件名改成英文/数字

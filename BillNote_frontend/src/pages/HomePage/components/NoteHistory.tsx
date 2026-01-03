@@ -21,6 +21,24 @@ interface NoteHistoryProps {
   selectedId: string | null
 }
 
+const isDifyIndexingCompleted = (payload: any) => {
+  const docs = payload?.data
+  if (!Array.isArray(docs) || docs.length === 0) return false
+  return docs.every(d => typeof d === 'object' && d && d.indexing_status === 'completed')
+}
+
+const getDifyTag = (task: any) => {
+  if (task?.dify_error) {
+    return { text: '入库失败', className: 'bg-rose-50 text-rose-700 border-rose-200' }
+  }
+  if (!task?.dify?.batch) return null
+
+  const completed = isDifyIndexingCompleted(task?.dify_indexing)
+  return completed
+    ? { text: '已入库', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+    : { text: '入库中', className: 'bg-amber-50 text-amber-700 border-amber-200' }
+}
+
 const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
   const tasks = useTaskStore(state => state.tasks)
   const removeTask = useTaskStore(state => state.removeTask)
@@ -76,15 +94,17 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
         />
       </div>
       <div className="flex flex-col gap-2 overflow-hidden">
-        {filteredTasks.map(task => (
-          <div
-            key={task.id}
-            onClick={() => onSelect(task.id)}
-            className={cn(
-              'flex cursor-pointer flex-col rounded-md border border-neutral-200 p-3',
-              selectedId === task.id && 'border-primary bg-primary-light'
-            )}
-          >
+        {filteredTasks.map(task => {
+          const difyTag = getDifyTag(task)
+          return (
+            <div
+              key={task.id}
+              onClick={() => onSelect(task.id)}
+              className={cn(
+                'flex cursor-pointer flex-col rounded-md border border-neutral-200 p-3',
+                selectedId === task.id && 'border-primary bg-primary-light'
+              )}
+            >
             <div
               className={cn('flex items-center gap-4')}
             >
@@ -127,7 +147,7 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
               </div>
             </div>
             <div className={'mt-2 flex items-center justify-between text-[10px]'}>
-              <div className="shrink-0">
+              <div className="shrink-0 flex items-center gap-2">
                 {task.status === 'SUCCESS' && (
                   <div className={'bg-primary w-10 rounded p-0.5 text-center text-white'}>
                     已完成
@@ -142,6 +162,11 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                 )}
                 {task.status === 'FAILED' && (
                   <div className={'w-10 rounded bg-red-500 p-0.5 text-center text-white'}>失败</div>
+                )}
+                {difyTag && (
+                  <div className={cn('rounded border px-2 py-0.5 text-center', difyTag.className)}>
+                    {difyTag.text}
+                  </div>
                 )}
               </div>
 
@@ -177,7 +202,8 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
               {/*</div>*/}
             </div>
           </div>
-        ))}
+          )
+        })}
       </div>
     </>
   )

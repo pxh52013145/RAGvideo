@@ -240,9 +240,24 @@ const NoteForm = () => {
     // 🔁 这里清空当前任务状态
     // 比如调用 resetCurrentTask() 或者 navigate 到一个新页面
     setCurrentTask(null)
+    setUploadSuccess(false)
+    form.reset({
+      platform: 'bilibili',
+      quality: 'medium',
+      video_url: '',
+      model_name: modelList[0]?.model_name || '',
+      style: 'minimal',
+      extras: '',
+      screenshot: false,
+      link: false,
+      video_understanding: false,
+      video_interval: 4,
+      grid_size: [3, 3],
+      format: [],
+    })
   }
   const FormButton = () => {
-    const label = generating ? '正在生成…' : editing ? '重新生成' : '生成笔记'
+    const label = generating ? '正在生成…' : editing ? '重新生成并入库' : '生成笔记并入库'
 
     return (
       <div className="flex gap-2">
@@ -258,7 +273,7 @@ const NoteForm = () => {
         {editing && (
           <Button type="button" variant="outline" className="w-1/3" onClick={handleCreateNew}>
             <Plus className="mr-2 h-4 w-4" />
-            新建笔记
+            新建任务
           </Button>
         )}
       </div>
