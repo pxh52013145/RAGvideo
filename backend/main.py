@@ -1,11 +1,14 @@
 import os
 from contextlib import asynccontextmanager
 
+from dotenv_loader import load_dotenv_safely
+
+load_dotenv_safely()
+
 import uvicorn
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
-from dotenv import load_dotenv
 
 from app.db.init_db import init_db
 from app.db.provider_dao import seed_default_providers
@@ -19,7 +22,6 @@ from events import register_handler
 from ffmpeg_helper import ensure_ffmpeg_or_raise
 
 logger = get_logger(__name__)
-load_dotenv()
 
 # 读取 .env 中的路径
 static_path = os.getenv('STATIC', '/static')
