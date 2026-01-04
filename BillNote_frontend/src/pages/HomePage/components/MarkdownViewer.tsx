@@ -14,6 +14,7 @@ import 'react-medium-image-zoom/dist/styles.css'
 import gfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import rehypeSlug from 'rehype-slug'
 import 'katex/dist/katex.min.css'
 import 'github-markdown-css/github-markdown-light.css'
 import { FC } from 'react'
@@ -271,7 +272,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                 <div className={'markdown-body w-full px-2'}>
                   <ReactMarkdown
                     remarkPlugins={[gfm, remarkMath]}
-                    rehypePlugins={[rehypeKatex]}
+                    rehypePlugins={[rehypeKatex, rehypeSlug]}
                     components={{
                       // Headings with improved styling and anchor links
                       h1: ({ children, ...props }) => (
@@ -315,7 +316,8 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                       ),
 
                       // Enhanced links with special handling for "原片" links
-                      a: ({ href, children, ...props }) => {
+                      a: ({ href, children, onClick, ...props }) => {
+                        const isHashLink = typeof href === 'string' && href.startsWith('#') && href.length > 1
                         const isOriginLink =
                           typeof children[0] === 'string' &&
                           (children[0] as string).startsWith('原片 @')
@@ -337,6 +339,38 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                                 <span>原片（{timeText}）</span>
                               </a>
                             </span>
+                          )
+                        }
+
+                        if (isHashLink) {
+                          return (
+                            <a
+                              className="text-primary hover:text-primary/80 inline-flex items-center gap-0.5 font-medium underline underline-offset-4"
+                              onClick={e => {
+                                onClick?.(e)
+                                e.preventDefault()
+                                let id = href.slice(1)
+                                try {
+                                  id = decodeURIComponent(id)
+                                } catch {
+                                  // ignore
+                                }
+
+                                const target = document.getElementById(id)
+                                if (target) {
+                                  target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                }
+                                try {
+                                  window.history.replaceState(null, '', href)
+                                } catch {
+                                  // ignore
+                                }
+                              }}
+                              href={href}
+                              {...props}
+                            >
+                              {children}
+                            </a>
                           )
                         }
 
