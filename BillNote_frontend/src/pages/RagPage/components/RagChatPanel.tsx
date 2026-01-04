@@ -18,6 +18,8 @@ const RagChatPanel = () => {
   const userId = useRagStore(state => state.userId)
   const conversations = useRagStore(state => state.conversations)
   const currentConversationId = useRagStore(state => state.currentConversationId)
+  const initialized = useRagStore(state => state.initialized)
+  const bootstrap = useRagStore(state => state.bootstrap)
   const createConversation = useRagStore(state => state.createConversation)
   const appendMessage = useRagStore(state => state.appendMessage)
   const updateConversation = useRagStore(state => state.updateConversation)
@@ -38,17 +40,22 @@ const RagChatPanel = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
 
   useEffect(() => {
+    void bootstrap()
+  }, [bootstrap])
+
+  useEffect(() => {
+    if (!initialized) return
     if (!currentConversationId && conversations.length === 0) {
       createConversation()
     }
-  }, [currentConversationId, conversations.length, createConversation])
+  }, [initialized, currentConversationId, conversations.length, createConversation])
 
   const bottomRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages.length])
 
-  const canSend = useMemo(() => input.trim().length > 0 && !sending, [input, sending])
+  const canSend = useMemo(() => input.trim().length > 0 && !sending && !!userId, [input, sending, userId])
 
   const resetConversation = () => {
     createConversation()

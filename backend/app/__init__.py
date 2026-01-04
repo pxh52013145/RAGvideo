@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from .routers import note, provider, model, config, rag
+from .routers import note, provider, model, config, rag, rag_history
 
 
 class UTF8JSONResponse(JSONResponse):
@@ -22,5 +22,6 @@ def create_app(lifespan) -> FastAPI:
     app.include_router(model.router,prefix="/api")
     app.include_router(config.router,  prefix="/api")
     app.include_router(rag.router, prefix="/api")
+    app.include_router(rag_history.router, prefix="/api")
 
     return app
