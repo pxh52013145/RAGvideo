@@ -321,6 +321,18 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                         const isOriginLink =
                           typeof children[0] === 'string' &&
                           (children[0] as string).startsWith('原片 @')
+                        const getPlainText = (node: any): string => {
+                          if (node == null) return ''
+                          if (typeof node === 'string' || typeof node === 'number') return String(node)
+                          if (Array.isArray(node)) return node.map(getPlainText).join('')
+                          if (typeof node === 'object' && 'props' in node) return getPlainText((node as any).props?.children)
+                          return ''
+                        }
+                        const normalizeText = (text: string) =>
+                          (text || '')
+                            .toLowerCase()
+                            .replace(/\s+/g, ' ')
+                            .trim()
 
                         if (isOriginLink) {
                           const timeMatch = (children[0] as string).match(/原片 @ (\d{2}:\d{2})/)
@@ -356,9 +368,19 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                                   // ignore
                                 }
 
-                                const target = document.getElementById(id)
-                                if (target) {
-                                  target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                const byId = document.getElementById(id)
+                                if (byId) {
+                                  byId.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                } else {
+                                  const linkText = normalizeText(getPlainText(children))
+                                  if (linkText) {
+                                    const headings = Array.from(
+                                      document.querySelectorAll('.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6')
+                                    ) as HTMLElement[]
+                                    const picked = headings.find(h => normalizeText(h.textContent || '').startsWith(linkText))
+                                      || headings.find(h => normalizeText(h.textContent || '').includes(linkText))
+                                    picked?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                  }
                                 }
                                 try {
                                   window.history.replaceState(null, '', href)
