@@ -247,7 +247,15 @@ const ProviderForm = ({ isCreate = false }: { isCreate?: boolean }) => {
               <FormItem className="flex items-center gap-4">
                 <FormLabel className="w-24 text-right">API Key</FormLabel>
                 <FormControl>
-                  <Input {...field} className="flex-1" />
+                  <Input
+                    {...field}
+                    type="password"
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    className="flex-1"
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>

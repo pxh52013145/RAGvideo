@@ -94,7 +94,7 @@ const RagChatPanel = () => {
       appendMessage(convId, assistantMsg)
     } catch (e) {
       console.error(e)
-      toast.error('对话失败，请检查 Dify App 是否已发布、模型是否可用')
+      // `request` already shows an error toast (network/backend). Avoid double-toasting here.
     } finally {
       setSending(false)
     }

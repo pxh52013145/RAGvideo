@@ -7,6 +7,7 @@ import AppSidebar from '@/components/AppSidebar'
 const getTitle = (pathname: string) => {
   if (pathname.startsWith('/note')) return '知识库'
   if (pathname.startsWith('/rag')) return 'RAG 视频问答'
+  if (pathname.startsWith('/settings')) return '设置'
   return 'RAGVideo'
 }
 
@@ -42,4 +43,3 @@ const AppShellLayout = () => {
 }
 
 export default AppShellLayout
-

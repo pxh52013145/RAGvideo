@@ -51,17 +51,17 @@ function App() {
             <Route element={<AppShellLayout />}>
               <Route path="rag" element={<RagPage />} />
               <Route path="note" element={<KnowledgePage />} />
-            </Route>
-            <Route path="settings" element={<SettingPage />}>
-              <Route index element={<Navigate to="model" replace />} />
-              <Route path="model" element={<Model />}>
-                <Route path="new" element={<ProviderForm isCreate />} />
-                <Route path=":id" element={<ProviderForm />} />
+              <Route path="settings" element={<SettingPage />}>
+                <Route index element={<Navigate to="model" replace />} />
+                <Route path="model" element={<Model />}>
+                  <Route path="new" element={<ProviderForm isCreate />} />
+                  <Route path=":id" element={<ProviderForm />} />
+                </Route>
+                <Route path="download" element={<Downloader />}>
+                  <Route path=":id" element={<DownloaderForm />} />
+                </Route>
+                <Route path="*" element={<NotFoundPage />} />
               </Route>
-              <Route path="download" element={<Downloader />}>
-                <Route path=":id" element={<DownloaderForm />} />
-              </Route>
-              <Route path="*" element={<NotFoundPage />} />
             </Route>
             <Route path="*" element={<NotFoundPage />} />
           </Route>

@@ -16,6 +16,58 @@ def _format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def _merge_transcript_segments_by_chars(
+    segments: list[Any] | None,
+    *,
+    max_chars: int = 900,
+) -> list[tuple[float, float, str]]:
+    """
+    Dify indexing with Ollama embeddings may fail when a document is split into hundreds of tiny chunks.
+    To reduce total chunks while preserving time ranges, merge consecutive transcript segments into
+    larger blocks capped by `max_chars` characters (rough heuristic).
+    """
+    if not segments or max_chars <= 0:
+        return []
+
+    merged: list[tuple[float, float, str]] = []
+    buf: list[str] = []
+    buf_len = 0
+    start_ts: float | None = None
+    end_ts: float | None = None
+
+    for seg in segments:
+        text = getattr(seg, "text", None)
+        if text is None:
+            continue
+        text = str(text).replace("\n", " ").strip()
+        if not text:
+            continue
+        text = re.sub(r"\s+", " ", text).strip()
+
+        seg_start = float(getattr(seg, "start", 0.0) or 0.0)
+        seg_end = float(getattr(seg, "end", seg_start) or seg_start)
+
+        extra = (1 if buf else 0) + len(text)
+        if buf and (buf_len + extra) > max_chars:
+            merged.append((float(start_ts or 0.0), float(end_ts or float(start_ts or 0.0)), " ".join(buf)))
+            buf = [text]
+            buf_len = len(text)
+            start_ts = seg_start
+            end_ts = seg_end
+            continue
+
+        if not buf:
+            start_ts = seg_start
+        buf.append(text)
+        buf_len += extra
+        end_ts = seg_end
+
+    if buf:
+        merged.append((float(start_ts or 0.0), float(end_ts or float(start_ts or 0.0)), " ".join(buf)))
+
+    return merged
+
+
 def build_rag_document_name(audio: AudioDownloadResult, platform: str) -> str:
     safe_title = (audio.title or "").strip() or "Untitled"
     safe_video_id = (audio.video_id or "").strip() or "unknown"
@@ -40,14 +92,22 @@ def build_rag_document_text(
     parts: list[str] = []
     parts.extend(header)
 
-    for seg in transcript.segments or []:
-        text = (seg.text or "").replace("\n", " ").strip()
-        if not text:
-            continue
-        start = _format_timestamp(seg.start)
-        end = _format_timestamp(seg.end)
-        parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
-        parts.append("")
+    merged = _merge_transcript_segments_by_chars(transcript.segments, max_chars=900)
+    if merged:
+        for start_s, end_s, text in merged:
+            start = _format_timestamp(start_s)
+            end = _format_timestamp(end_s)
+            parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
+            parts.append("")
+    else:
+        for seg in transcript.segments or []:
+            text = (seg.text or "").replace("\n", " ").strip()
+            if not text:
+                continue
+            start = _format_timestamp(seg.start)
+            end = _format_timestamp(seg.end)
+            parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
+            parts.append("")
 
     return "\n".join(parts).strip() + "\n"
 
@@ -80,14 +140,22 @@ def build_rag_document_text_with_note(
     parts.append("[TRANSCRIPT]")
     parts.append("")
 
-    for seg in transcript.segments or []:
-        text = (seg.text or "").replace("\n", " ").strip()
-        if not text:
-            continue
-        start = _format_timestamp(seg.start)
-        end = _format_timestamp(seg.end)
-        parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
-        parts.append("")
+    merged = _merge_transcript_segments_by_chars(transcript.segments, max_chars=900)
+    if merged:
+        for start_s, end_s, text in merged:
+            start = _format_timestamp(start_s)
+            end = _format_timestamp(end_s)
+            parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
+            parts.append("")
+    else:
+        for seg in transcript.segments or []:
+            text = (seg.text or "").replace("\n", " ").strip()
+            if not text:
+                continue
+            start = _format_timestamp(seg.start)
+            end = _format_timestamp(seg.end)
+            parts.append(f"[VID={audio.video_id}][PLATFORM={platform}][TIME={start}-{end}] {text}")
+            parts.append("")
 
     return "\n".join(parts).strip() + "\n"
 

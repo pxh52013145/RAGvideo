@@ -12,11 +12,12 @@ export interface IResponse<T = any> {
 // This function simulates a message display (in real projects, you'd use a UI library's component)
 
 const baseURL = import.meta.env.VITE_API_BASE_URL;
+const timeoutMs = Number(import.meta.env.VITE_API_TIMEOUT_MS || 60000);
 
 // 创建实例
  const request: AxiosInstance = axios.create({
   baseURL: baseURL || '/api',
-  timeout: 10000,
+  timeout: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 60000,
 });
 
 // 响应拦截器

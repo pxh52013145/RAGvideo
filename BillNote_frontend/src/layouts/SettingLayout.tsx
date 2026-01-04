@@ -1,11 +1,4 @@
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip.tsx'
-import { Link, Outlet } from 'react-router-dom'
-import { SlidersHorizontal } from 'lucide-react'
+import { Outlet } from 'react-router-dom'
 import React from 'react'
 import logo from '@/assets/icon.svg'
 
@@ -14,51 +7,21 @@ interface ISettingLayoutProps {
 }
 const SettingLayout = ({ Menu }: ISettingLayoutProps) => {
   return (
-    <div
-      className="h-full w-full"
-      style={{
-        backgroundColor: 'var(--color-muted)',
-      }}
-    >
-      <div className="flex flex-1">
-        {/* 左侧部分：Header + 表单 */}
-        <aside className="flex w-[300px] flex-col border-r border-neutral-200 bg-white">
-          {/* Header */}
-          <header className="flex h-16 items-center justify-between px-6">
-            <div className="flex items-center gap-2">
-              <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl">
-                <img src={logo} alt="logo" className="h-full w-full object-contain" />
-              </div>
-              <div className="text-2xl font-bold text-gray-800">BiliNote</div>
-            </div>
-            <div>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger>
-                    <Link to={'/'}>
-                      <SlidersHorizontal className="text-muted-foreground hover:text-primary cursor-pointer" />
-                    </Link>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <span>返回首页</span>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-          </header>
-
-          {/* 表单内容 */}
-          <div className="flex-1 overflow-auto p-4">
-            {/*<NoteForm />*/}
-            {Menu}
+    <div className="flex h-full w-full bg-slate-50 text-slate-900">
+      <aside className="w-80 lg:w-96 bg-white border-r border-slate-200 flex flex-col z-10 shadow-sm">
+        <header className="h-16 px-6 border-b border-slate-100 flex items-center gap-3">
+          <div className="h-9 w-9 rounded-xl overflow-hidden bg-slate-100 flex items-center justify-center">
+            <img src={logo} alt="logo" className="h-full w-full object-contain" />
           </div>
-        </aside>
+          <div className="font-semibold text-slate-800">设置</div>
+        </header>
 
-        {/* 右侧预览区域 */}
-        <main className="h-screen flex-1 overflow-hidden">
-          <Outlet />
-        </main>
-      </div>
+        <div className="flex-1 overflow-auto p-4">{Menu}</div>
+      </aside>
+
+      <main className="flex-1 overflow-hidden bg-white">
+        <Outlet />
+      </main>
     </div>
   )
 }
