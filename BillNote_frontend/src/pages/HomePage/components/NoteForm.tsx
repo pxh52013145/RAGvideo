@@ -171,32 +171,53 @@ const NoteForm = () => {
     return
   }, [])
   useEffect(() => {
+    const defaults = {
+      platform: 'bilibili',
+      quality: 'medium' as const,
+      video_url: '',
+      model_name: modelList[0]?.model_name || '',
+      style: 'minimal',
+      extras: '',
+      screenshot: false,
+      link: false,
+      video_understanding: false,
+      video_interval: 4,
+      grid_size: [3, 3] as [number, number],
+      format: [] as string[],
+    }
+
+    // No selected task (e.g. app start) -> always show a fresh form.
+    if (!currentTaskId) {
+      setUploadSuccess(false)
+      form.reset(defaults)
+      return
+    }
+
     if (!currentTask) return
     const { formData } = currentTask
 
-    console.log('currentTask.formData.platform:', formData.platform)
-
     form.reset({
-      platform: formData.platform || 'bilibili',
-      video_url: formData.video_url || '',
-      model_name: formData.model_name || modelList[0]?.model_name || '',
-      style: formData.style || 'minimal',
-      quality: formData.quality || 'medium',
-      extras: formData.extras || '',
-      screenshot: formData.screenshot ?? false,
-      link: formData.link ?? false,
-      video_understanding: formData.video_understanding ?? false,
-      video_interval: formData.video_interval ?? 4,
-      grid_size: formData.grid_size ?? [3, 3],
-      format: formData.format ?? [],
+      ...defaults,
+      ...formData,
+      // ensure fallbacks
+      platform: formData.platform || defaults.platform,
+      video_url: formData.video_url || defaults.video_url,
+      model_name: formData.model_name || defaults.model_name,
+      style: formData.style || defaults.style,
+      quality: (formData.quality as any) || defaults.quality,
+      extras: formData.extras || defaults.extras,
+      screenshot: formData.screenshot ?? defaults.screenshot,
+      link: formData.link ?? defaults.link,
+      video_understanding: formData.video_understanding ?? defaults.video_understanding,
+      video_interval: formData.video_interval ?? defaults.video_interval,
+      grid_size: (formData.grid_size as any) ?? defaults.grid_size,
+      format: formData.format ?? defaults.format,
     })
   }, [
     // 当下面任意一个变了，就重新 reset
     currentTaskId,
     // modelList 用来兜底 model_name
     modelList.length,
-    // 还要加上 formData 的各字段，或者直接 currentTask
-    currentTask?.formData,
   ])
 
   /* ---- 帮助函数 ---- */

@@ -1,6 +1,7 @@
 import './App.css'
 import KnowledgePage from '@/pages/KnowledgePage/Knowledge'
 import { useTaskPolling } from '@/hooks/useTaskPolling.ts'
+import { useTaskStore } from '@/store/taskStore'
 import SettingPage from './pages/SettingPage/index.tsx'
 import { BrowserRouter, Navigate, Routes } from 'react-router-dom'
 import { Route } from 'react-router-dom'
@@ -29,6 +30,8 @@ function App() {
   // 在后端初始化完成后执行系统检查
   useEffect(() => {
     if (initialized) {
+      // Always start with a fresh ingest form (no task selected) after app restart.
+      useTaskStore.getState().setCurrentTask(null)
       systemCheck()
     }
   }, [initialized])
