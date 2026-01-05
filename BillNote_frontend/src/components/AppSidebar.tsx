@@ -23,8 +23,8 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
         </div>
         <span
           className={[
-            'ml-3 font-bold text-lg tracking-tight whitespace-nowrap overflow-hidden transition-opacity duration-200',
-            isOpen ? 'opacity-100' : 'opacity-0 w-0',
+            'font-bold text-lg tracking-tight whitespace-nowrap overflow-hidden transition-all duration-200',
+            isOpen ? 'ml-3 w-auto opacity-100' : 'ml-0 w-0 opacity-0',
           ].join(' ')}
         >
           RAG<span className="text-brand-400">Video</span>
@@ -48,8 +48,8 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
           <MessageSquareText className="w-5 h-5" />
           <span
             className={[
-              'ml-3 font-medium whitespace-nowrap overflow-hidden transition-all duration-200',
-              isOpen ? 'w-auto opacity-100' : 'w-0 opacity-0',
+              'font-medium whitespace-nowrap overflow-hidden transition-all duration-200',
+              isOpen ? 'ml-3 w-auto opacity-100' : 'ml-0 w-0 opacity-0',
             ].join(' ')}
           >
             RAG 问答
@@ -72,8 +72,8 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
           <FileText className="w-5 h-5" />
           <span
             className={[
-              'ml-3 font-medium whitespace-nowrap overflow-hidden transition-all duration-200',
-              isOpen ? 'w-auto opacity-100' : 'w-0 opacity-0',
+              'font-medium whitespace-nowrap overflow-hidden transition-all duration-200',
+              isOpen ? 'ml-3 w-auto opacity-100' : 'ml-0 w-0 opacity-0',
             ].join(' ')}
           >
             知识库
@@ -94,8 +94,8 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
           <Settings className="w-5 h-5" />
           <span
             className={[
-              'ml-3 font-medium whitespace-nowrap overflow-hidden transition-all duration-200',
-              isOpen ? 'w-auto opacity-100' : 'w-0 opacity-0',
+              'font-medium whitespace-nowrap overflow-hidden transition-all duration-200',
+              isOpen ? 'ml-3 w-auto opacity-100' : 'ml-0 w-0 opacity-0',
             ].join(' ')}
           >
             设置
