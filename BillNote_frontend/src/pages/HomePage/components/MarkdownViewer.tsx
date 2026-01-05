@@ -114,8 +114,13 @@ const extractOriginTimeSeconds = (text: string): number | null => {
   const raw = String(text || '')
   const patterns: RegExp[] = [
     /Content-\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*]/i,
+    /Content-\s*(\d{1,2}:\d{2}(?::\d{2})?)/i,
     /原片\s*@\s*(\d{1,2}:\d{2}(?::\d{2})?)/,
     /原文\s*@\s*(\d{1,2}:\d{2}(?::\d{2})?)/,
+    /Screenshot-\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*]/i,
+    /\[\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*]/,
+    /\(\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*\)/,
+    /^\s*(\d{1,2}:\d{2}(?::\d{2})?)\b/,
   ]
 
   for (const re of patterns) {
@@ -162,7 +167,14 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
     const markers = Array.from(
       viewport.querySelectorAll<HTMLElement>('[data-origin-time-seconds]')
     )
-    if (markers.length === 0) return 0
+    if (markers.length === 0) {
+      const segments = currentTask?.transcript?.segments || []
+      const durationSeconds = segments.length > 0 ? Number(segments[segments.length - 1]?.end || 0) : 0
+      const maxScroll = viewport.scrollHeight - viewport.clientHeight
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || maxScroll <= 0) return 0
+      const ratio = viewport.scrollTop / maxScroll
+      return Math.max(0, Math.min(Math.floor(durationSeconds), Math.floor(durationSeconds * ratio)))
+    }
 
     const viewportRectTop = viewport.getBoundingClientRect().top
     const anchorY = viewport.scrollTop + viewport.clientHeight * 0.25
@@ -453,9 +465,39 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                         </h4>
                       ),
 
+                      h5: ({ children, ...props }) => (
+                        <h5
+                          className="text-primary mt-5 mb-2 scroll-m-20 text-base font-semibold tracking-tight"
+                          data-origin-time-seconds={
+                            extractOriginTimeSeconds(getPlainText(children)) ?? undefined
+                          }
+                          {...props}
+                        >
+                          {children}
+                        </h5>
+                      ),
+
+                      h6: ({ children, ...props }) => (
+                        <h6
+                          className="text-primary mt-4 mb-2 scroll-m-20 text-sm font-semibold tracking-tight"
+                          data-origin-time-seconds={
+                            extractOriginTimeSeconds(getPlainText(children)) ?? undefined
+                          }
+                          {...props}
+                        >
+                          {children}
+                        </h6>
+                      ),
+
                       // Paragraphs with better line height
                       p: ({ children, ...props }) => (
-                        <p className="leading-7 [&:not(:first-child)]:mt-6" {...props}>
+                        <p
+                          className="leading-7 [&:not(:first-child)]:mt-6"
+                          data-origin-time-seconds={
+                            extractOriginTimeSeconds(getPlainText(children)) ?? undefined
+                          }
+                          {...props}
+                        >
                           {children}
                         </p>
                       ),
@@ -584,17 +626,23 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
 
                       // Enhanced list items with support for "fake headings"
                       li: ({ children, ...props }) => {
-                        const rawText = String(children)
+                        const rawText = getPlainText(children)
                         const isFakeHeading = /^(\*\*.+\*\*)$/.test(rawText.trim())
+                        const originSeconds = extractOriginTimeSeconds(rawText) ?? undefined
 
                         if (isFakeHeading) {
                           return (
-                            <div className="text-primary my-4 text-lg font-bold">{children}</div>
+                            <div
+                              className="text-primary my-4 text-lg font-bold"
+                              data-origin-time-seconds={originSeconds}
+                            >
+                              {children}
+                            </div>
                           )
                         }
 
                         return (
-                          <li className="my-1" {...props}>
+                          <li className="my-1" data-origin-time-seconds={originSeconds} {...props}>
                             {children}
                           </li>
                         )

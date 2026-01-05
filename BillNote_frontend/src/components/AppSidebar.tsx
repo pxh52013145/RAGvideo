@@ -17,7 +17,12 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
         isOpen ? 'w-64' : 'w-16',
       ].join(' ')}
     >
-      <div className="h-16 flex items-center px-4 border-b border-slate-800/50">
+      <div
+        className={[
+          'h-16 flex items-center border-b border-slate-800/50',
+          isOpen ? 'px-4 justify-start' : 'px-0 justify-center',
+        ].join(' ')}
+      >
         <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center shrink-0">
           <Play className="w-4 h-4 fill-white text-white" />
         </div>
@@ -31,7 +36,7 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
         </span>
       </div>
 
-      <nav className="flex-1 py-6 px-2 space-y-2">
+      <nav className={['flex-1 space-y-2', isOpen ? 'py-6 px-2' : 'py-4 px-0'].join(' ')}>
         <NavLink
           to="/rag"
           className={({ isActive }) =>
@@ -81,7 +86,7 @@ const AppSidebar = ({ isOpen, toggleOpen }: AppSidebarProps) => {
         </NavLink>
       </nav>
 
-      <div className="p-2 border-t border-slate-800/50">
+      <div className={['border-t border-slate-800/50', isOpen ? 'p-2' : 'p-1'].join(' ')}>
         <Link
           to="/settings"
           className={[
