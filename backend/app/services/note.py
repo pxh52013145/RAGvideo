@@ -38,6 +38,7 @@ from app.utils.note_helper import replace_content_markers
 from app.utils.status_code import StatusCode
 from app.utils.video_helper import generate_screenshot
 from app.utils.video_reader import VideoReader
+from app.utils.paths import ensure_dir, note_output_dir, screenshots_root_dir
 
 # ------------------ 环境变量与全局配置 ------------------
 
@@ -49,10 +50,9 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost")
 BACKEND_PORT = os.getenv("BACKEND_PORT", "8483")
 BACKEND_BASE_URL = f"{API_BASE_URL}:{BACKEND_PORT}"
 
-# 输出目录（用于缓存音频、转写、Markdown 文件，以及存储截图）
-NOTE_OUTPUT_DIR = Path(os.getenv("NOTE_OUTPUT_DIR", "note_results"))
-NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-IMAGE_OUTPUT_DIR = os.getenv("OUT_DIR", "./static/screenshots")
+# 输出目录（相对路径统一按 backend 根目录解析，避免因启动目录不同而生成两套数据）
+NOTE_OUTPUT_DIR = ensure_dir(note_output_dir())
+IMAGE_OUTPUT_DIR = ensure_dir(screenshots_root_dir())
 # 图片基础 URL（用于生成 Markdown 中的图片链接，需前端静态目录对应）
 IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "/static/screenshots")
 
@@ -94,6 +94,7 @@ class NoteGenerator:
         self.transcriber: Transcriber = self._init_transcriber()
         self.video_path: Optional[Path] = None
         self.video_img_urls=[]
+        self.current_task_id: Optional[str] = None
         logger.info("NoteGenerator 初始化完成")
 
 
@@ -140,6 +141,14 @@ class NoteGenerator:
         if grid_size is None:
             grid_size = []
 
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            raise ValueError("task_id is required")
+
+        self.current_task_id = task_id
+        task_dir = NOTE_OUTPUT_DIR / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+
         try:
             logger.info(f"开始生成笔记 (task_id={task_id})")
             self._update_status(task_id, TaskStatus.PARSING)
@@ -150,9 +159,9 @@ class NoteGenerator:
             gpt = self._get_gpt(model_name, provider_id)
 
             # 缓存文件路径
-            audio_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_audio.json"
-            transcript_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_transcript.json"
-            markdown_cache_file = NOTE_OUTPUT_DIR / f"{task_id}_markdown.md"
+            audio_cache_file = task_dir / f"{task_id}_audio.json"
+            transcript_cache_file = task_dir / f"{task_id}_transcript.json"
+            markdown_cache_file = task_dir / f"{task_id}_markdown.md"
             print(audio_cache_file)
             # 1. 下载音频/视频
             audio_meta = self._download_media(
@@ -316,8 +325,9 @@ class NoteGenerator:
         if not task_id:
             return
 
-        NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        status_file = NOTE_OUTPUT_DIR / f"{task_id}.status.json"
+        task_dir = NOTE_OUTPUT_DIR / str(task_id).strip()
+        task_dir.mkdir(parents=True, exist_ok=True)
+        status_file = task_dir / f"{task_id}.status.json"
         print(f"写入状态文件: {status_file} 当前状态: {status}")
         normalized_status = status.value if isinstance(status, TaskStatus) else str(status)
 
@@ -610,7 +620,7 @@ class NoteGenerator:
         :param extras: GPT 额外参数
         :return: 生成的 Markdown 字符串
         """
-        task_id = markdown_cache_file.stem
+        task_id = markdown_cache_file.stem.split("_")[0]
         if task_manager.is_cancelled(task_id):
             raise TaskCancelledError("Task cancelled")
         self._update_status(task_id, TaskStatus.SUMMARIZING)
@@ -680,10 +690,14 @@ class NoteGenerator:
         matches: List[Tuple[str, int]] = self._extract_screenshot_timestamps(markdown)
         for idx, (marker, ts) in enumerate(matches):
             try:
-                img_path = generate_screenshot(str(video_path), str(IMAGE_OUTPUT_DIR), ts, idx)
+                task_id = str(self.current_task_id or "").strip()
+                output_dir = IMAGE_OUTPUT_DIR / task_id if task_id else IMAGE_OUTPUT_DIR
+                img_path = generate_screenshot(str(video_path), str(output_dir), ts, idx)
                 filename = Path(img_path).name
-                # 构建前端可访问的 URL，例如 /static/screenshots/{filename}
-                img_url = f"{IMAGE_BASE_URL.rstrip('/')}/{filename}"
+                # 构建前端可访问的 URL，例如 /static/screenshots/{task_id}/{filename}
+                img_url = (
+                    f"{IMAGE_BASE_URL.rstrip('/')}/{task_id}/{filename}" if task_id else f"{IMAGE_BASE_URL.rstrip('/')}/{filename}"
+                )
                 markdown = markdown.replace(marker, f"![]({img_url})", 1)
             except Exception as exc:
                 logger.error(f"生成截图失败 (timestamp={ts})：{exc}")

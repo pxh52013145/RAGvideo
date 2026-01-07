@@ -40,9 +40,9 @@ export const useTaskPolling = (interval = 3000) => {
         if (task.status !== 'SUCCESS') return true
         if (task.dify_error) return false
         if (!task.dify?.batch) {
-          // Grace period: note may be done while Dify upload is still in-flight.
-          const ageMs = Date.now() - new Date(task.createdAt).getTime()
-          return ageMs < 2 * 60 * 1000
+          // Note generation may finish before Dify upload info is written back.
+          // Keep polling until we either get a Dify batch id or a dify_error.
+          return true
         }
         if (getDifyIndexingError(task.dify_indexing)) return false
         return !isDifyIndexingCompleted(task.dify_indexing)

@@ -119,7 +119,7 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
   const removeTask = useTaskStore(state => state.removeTask)
   const reingestTask = useTaskStore(state => state.reingestTask)
   // 确保baseURL没有尾部斜杠
-  const baseURL = (String(import.meta.env.VITE_API_BASE_URL || 'api')).replace(/\/$/, '')
+  const baseURL = String(import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
   const [rawSearch, setRawSearch] = useState('')
   const [search, setSearch] = useState('')
   const [reingestingId, setReingestingId] = useState<string | null>(null)

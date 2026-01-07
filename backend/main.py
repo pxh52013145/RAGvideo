@@ -18,25 +18,17 @@ from app.exceptions.exception_handlers import register_exception_handlers
 from app.utils.logger import get_logger
 from app import create_app
 from app.transcriber.transcriber_provider import get_transcriber
+from app.utils.paths import ensure_dir, screenshots_root_dir, static_dir as get_static_dir, static_mount_path, uploads_dir as get_uploads_dir
 from events import register_handler
 from ffmpeg_helper import ensure_ffmpeg_or_raise
 
 logger = get_logger(__name__)
 
-# 读取 .env 中的路径
-static_path = os.getenv('STATIC', '/static')
-out_dir = os.getenv('OUT_DIR', './static/screenshots')
-
-# 自动创建本地目录（static 和 static/screenshots）
-static_dir = "static"
-uploads_dir = "uploads"
-if not os.path.exists(static_dir):
-    os.makedirs(static_dir)
-if not os.path.exists(uploads_dir):
-    os.makedirs(uploads_dir)
-
-if not os.path.exists(out_dir):
-    os.makedirs(out_dir)
+# 读取 .env 中的路径（相对路径统一按 backend 根目录解析，避免因启动目录不同而生成两套数据）
+static_path = static_mount_path()
+static_dir = ensure_dir(get_static_dir())
+uploads_dir = ensure_dir(get_uploads_dir())
+out_dir = ensure_dir(screenshots_root_dir())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,8 +53,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 register_exception_handlers(app)
-app.mount(static_path, StaticFiles(directory=static_dir), name="static")
-app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+app.mount(static_path, StaticFiles(directory=str(static_dir)), name="static")
+app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 
 
 

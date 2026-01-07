@@ -9,6 +9,7 @@ from app.downloaders.base import Downloader
 from app.enmus.note_enums import DownloadQuality
 from app.models.audio_model import AudioDownloadResult
 from app.utils.video_helper import save_cover_to_static
+from app.utils.paths import backend_root, uploads_dir as get_uploads_dir
 
 
 class LocalDownloader(Downloader, ABC):
@@ -28,11 +29,11 @@ class LocalDownloader(Downloader, ABC):
     @staticmethod
     def _copy_to_safe_path(input_path: str) -> str:
         ext = os.path.splitext(input_path)[1] or ".mp4"
-        safe_dir = os.path.join(os.getcwd(), "uploads", "_safe")
-        os.makedirs(safe_dir, exist_ok=True)
-        safe_path = os.path.join(safe_dir, f"{uuid.uuid4().hex}{ext}")
-        shutil.copy2(input_path, safe_path)
-        return safe_path
+        safe_dir = get_uploads_dir() / "_safe"
+        safe_dir.mkdir(parents=True, exist_ok=True)
+        safe_path = safe_dir / f"{uuid.uuid4().hex}{ext}"
+        shutil.copy2(input_path, str(safe_path))
+        return str(safe_path)
 
 
     def extract_cover(self, input_path: str, output_dir: Optional[str] = None) -> str:
@@ -107,9 +108,8 @@ class LocalDownloader(Downloader, ABC):
         处理本地文件路径，返回视频文件路径
         """
         if video_url.startswith('/uploads'):
-            project_root = os.getcwd()
-            video_url = os.path.join(project_root, video_url.lstrip('/'))
-            video_url = os.path.normpath(video_url)
+            project_root = backend_root()
+            video_url = os.path.normpath(str((project_root / video_url.lstrip('/')).resolve()))
 
         if not os.path.exists(video_url):
             raise FileNotFoundError()
@@ -125,9 +125,8 @@ class LocalDownloader(Downloader, ABC):
         处理本地文件路径，返回音频元信息
         """
         if video_url.startswith('/uploads'):
-            project_root = os.getcwd()
-            video_url = os.path.join(project_root, video_url.lstrip('/'))
-            video_url = os.path.normpath(video_url)
+            project_root = backend_root()
+            video_url = os.path.normpath(str((project_root / video_url.lstrip('/')).resolve()))
 
         if not os.path.exists(video_url):
             raise FileNotFoundError(f"本地文件不存在: {video_url}")

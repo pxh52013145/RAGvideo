@@ -1,7 +1,5 @@
 import {
   BotMessageSquare,
-  SquareChevronRight,
-  Captions,
   HardDriveDownload,
   Wrench,
   Database,
@@ -35,6 +33,12 @@ const Menu = () => {
       name: 'Dify / RAG 配置',
       icon: <Database />,
       path: '/settings/dify',
+    },
+    {
+      id: 'ingest',
+      name: '入库设置',
+      icon: <Wrench />,
+      path: '/settings/ingest',
     },
     // //其他配置
     // {

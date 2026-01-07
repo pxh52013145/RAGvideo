@@ -1,4 +1,4 @@
-import request from '@/utils/request'
+import request, { RequestConfig } from '@/utils/request'
 import toast from 'react-hot-toast'
 
 export const generateNote = async (data: {
@@ -16,24 +16,11 @@ export const generateNote = async (data: {
   grid_size: Array<number>
 }, opts?: { silent?: boolean }) => {
   try {
-    console.log('generateNote', data)
-    const response = await request.post('/generate_note', data)
-
-    if (!response) {
-      if (response.data.msg) {
-        toast.error(response.data.msg)
-      }
-      return null
-    }
-    if (!opts?.silent) {
-      toast.success('笔记生成任务已提交！')
-    }
-
-    console.log('res', response)
-    // 成功提示
-
+    const config: RequestConfig | undefined = opts?.silent ? { silent: true } : undefined
+    const response = await request.post('/generate_note', data, config)
+    if (!opts?.silent) toast.success('笔记生成任务已提交！')
     return response
-  } catch (e: any) {
+  } catch (e: unknown) {
     console.error('❌ 请求出错', e)
 
     // 错误提示
@@ -50,11 +37,10 @@ export const delete_task = async ({ task_id, video_id, platform }) => {
       video_id,
       platform,
     }
-    const res = await request.post('/delete_task', data)
-
-
-      toast.success('任务已成功删除')
-      return res
+    const config: RequestConfig = { silent: true }
+    const res = await request.post('/delete_task', data, config)
+    toast.success('任务已成功删除')
+    return res
   } catch (e) {
     toast.error('请求异常，删除任务失败')
     console.error('❌ 删除任务失败:', e)
@@ -62,16 +48,13 @@ export const delete_task = async ({ task_id, video_id, platform }) => {
   }
 }
 
-export const get_task_status = async (task_id: string) => {
+export const get_task_status = async (task_id: string, opts?: { silent?: boolean }) => {
   try {
-    // 成功提示
-
-    return await request.get('/task_status/' + task_id)
+    const silent = opts?.silent ?? true
+    const config: RequestConfig = { silent }
+    return await request.get('/task_status/' + task_id, config)
   } catch (e) {
     console.error('❌ 请求出错', e)
-
-    // 错误提示
-    toast.error('笔记生成失败，请稍后重试')
 
     throw e // 抛出错误以便调用方处理
   }
@@ -88,7 +71,8 @@ export const reingest_dify = async (
   opts?: { silent?: boolean }
 ) => {
   try {
-    const response = await request.post('/reingest_dify', data)
+    const config: RequestConfig = { silent: true }
+    const response = await request.post('/reingest_dify', data, config)
     if (!opts?.silent) toast.success('已重新提交入库')
     return response
   } catch (e) {

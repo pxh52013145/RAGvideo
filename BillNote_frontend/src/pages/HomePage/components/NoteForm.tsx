@@ -7,7 +7,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form.tsx'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { type FieldErrors, useFieldArray, useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -19,6 +19,7 @@ import { generateNote } from '@/services/note.ts'
 import { uploadFile } from '@/services/upload.ts'
 import { type Task, useTaskStore } from '@/store/taskStore'
 import { useModelStore } from '@/store/modelStore'
+import { useSystemStore } from '@/store/configStore'
 import {
   Tooltip,
   TooltipContent,
@@ -38,7 +39,21 @@ import {
 import { Input } from '@/components/ui/input.tsx'
 import { Textarea } from '@/components/ui/textarea.tsx'
 import { noteStyles, noteFormats, videoPlatforms } from '@/constant/note.ts'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs.tsx'
 import { useNavigate } from 'react-router-dom'
+
+const DEFAULT_WEB_NOTE_FORMAT: string[] = ['toc', 'link', 'summary']
+const DEFAULT_LOCAL_NOTE_FORMAT: string[] = ['toc', 'summary']
+
+const inferWebPlatformFromUrl = (url: string) => {
+  const u = String(url || '').toLowerCase()
+  if (!u) return ''
+  if (u.includes('bilibili.com') || u.includes('b23.tv')) return 'bilibili'
+  if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube'
+  if (u.includes('douyin.com')) return 'douyin'
+  if (u.includes('kuaishou.com')) return 'kuaishou'
+  return ''
+}
 
 /* -------------------- 校验 Schema -------------------- */
 const formSchema = z
@@ -66,16 +81,13 @@ const formSchema = z
     if (entries.length === 0) {
       ctx.addIssue({
         code: 'custom',
-        message: platform === 'local' ? '本地视频路径不能为空' : '视频链接不能为空',
+        message: platform === 'local' ? '本地视频不能为空' : '视频链接不能为空',
         path: ['video_urls', 0],
       })
       return
     }
 
     if (platform === 'local') {
-      if (entries.length > 1) {
-        ctx.addIssue({ code: 'custom', message: '本地视频暂不支持批量导入', path: ['video_urls'] })
-      }
       return
     } else {
       for (let i = 0; i < cleaned.length; i += 1) {
@@ -84,6 +96,9 @@ const formSchema = z
         try {
           const url = new URL(raw)
           if (!['http:', 'https:'].includes(url.protocol)) throw new Error()
+          if (!inferWebPlatformFromUrl(raw)) {
+            ctx.addIssue({ code: 'custom', message: '暂不支持该视频平台或链接格式无效', path: ['video_urls', i] })
+          }
         } catch {
           ctx.addIssue({ code: 'custom', message: '请输入正确的视频链接', path: ['video_urls', i] })
         }
@@ -136,7 +151,6 @@ const CheckboxGroup = ({
 )
 
 /* -------------------- 主组件 -------------------- */
-type DuplicateStrategy = 'ask' | 'skip' | 'regenerate'
 type BatchItemStatus = 'queued' | 'running' | 'success' | 'failed' | 'skipped'
 
 interface BatchItem {
@@ -146,16 +160,6 @@ interface BatchItem {
   status: BatchItemStatus
   taskId?: string
   error?: string
-}
-
-const inferPlatformFromUrl = (defaultPlatform: string, url: string, enabled: boolean) => {
-  if (!enabled) return defaultPlatform
-  const u = String(url || '').toLowerCase()
-  if (u.includes('bilibili.com')) return 'bilibili'
-  if (u.includes('youtube.com') || u.includes('youtu.be')) return 'youtube'
-  if (u.includes('douyin.com')) return 'douyin'
-  if (u.includes('kuaishou.com')) return 'kuaishou'
-  return defaultPlatform
 }
 
 const safeUrl = (raw: string) => {
@@ -205,10 +209,24 @@ const buildSourceKeyFromTask = (task: Task) => {
   return null
 }
 
+type VideoSourceType = 'web' | 'local'
+
+const getPlatformMeta = (p: string) => {
+  const key = String(p || '').toLowerCase()
+  return videoPlatforms.find(item => String(item.value).toLowerCase() === key)
+}
+
+const getLocalFileLabel = (raw: string) => {
+  const v = String(raw || '').trim()
+  if (!v) return ''
+  const last = v.split('/').filter(Boolean).pop()
+  return last ? decodeURIComponent(last) : v
+}
+
 const NoteForm = () => {
-  const navigate = useNavigate();
-  const [isUploading, setIsUploading] = useState(false)
-  const [uploadSuccess, setUploadSuccess] = useState(false)
+  const navigate = useNavigate()
+  const localFileInputRef = useRef<HTMLInputElement | null>(null)
+  const [localUpload, setLocalUpload] = useState({ uploading: false, done: 0, total: 0 })
   /* ---- 全局状态 ---- */
   const { tasks, addPendingTask, ingestTaskId, setIngestTask, getIngestTask, retryTask } =
     useTaskStore()
@@ -229,23 +247,28 @@ const NoteForm = () => {
       video_understanding: false,
       video_interval: 4,
       grid_size: [3, 3],
-      format: [],
+      format: [...DEFAULT_WEB_NOTE_FORMAT],
     },
   })
   const currentTask = getIngestTask()
-  const { fields: videoUrlFields, append: appendVideoUrl, remove: removeVideoUrl } = useFieldArray({
+  const {
+    fields: videoUrlFields,
+    append: appendVideoUrl,
+    remove: removeVideoUrl,
+    replace: replaceVideoUrls,
+  } = useFieldArray({
     control: form.control,
     name: 'video_urls',
   })
   const watchedVideoUrls = useWatch({ control: form.control, name: 'video_urls' }) as string[]
+  const watchedFormat = useWatch({ control: form.control, name: 'format' }) as string[]
   const cleanedVideoUrls = useMemo(() => {
     return (Array.isArray(watchedVideoUrls) ? watchedVideoUrls : [])
       .map(v => String(v ?? '').trim())
       .filter(Boolean)
   }, [watchedVideoUrls])
 
-  const [autoDetectPlatform, setAutoDetectPlatform] = useState(true)
-  const [duplicateStrategy, setDuplicateStrategy] = useState<DuplicateStrategy>('ask')
+  const duplicateStrategy = useSystemStore(state => state.duplicateStrategy)
 
   const [batchItems, setBatchItems] = useState<BatchItem[]>([])
   const [batchRunning, setBatchRunning] = useState(false)
@@ -260,10 +283,16 @@ const NoteForm = () => {
   const platform = useWatch({ control: form.control, name: 'platform' }) as string
   const videoUnderstandingEnabled = useWatch({ control: form.control, name: 'video_understanding' })
   const editing = currentTask && currentTask.id
+  const videoSourceType: VideoSourceType = platform === 'local' ? 'local' : 'web'
+
+  const webVideoUrlsRef = useRef<string[]>([''])
+  const localVideoUrlsRef = useRef<string[]>([])
+  const webFormatRef = useRef<string[]>([...DEFAULT_WEB_NOTE_FORMAT])
+  const localFormatRef = useRef<string[]>([...DEFAULT_LOCAL_NOTE_FORMAT])
 
   const goModelAdd = () => {
-    navigate("/settings/model");
-  };
+    navigate('/settings/model')
+  }
   /* ---- 副作用 ---- */
   useEffect(() => {
     loadEnabledModels()
@@ -275,7 +304,7 @@ const NoteForm = () => {
       platform: 'bilibili',
       quality: 'medium' as const,
       video_urls: [''],
-      model_name: modelList[0]?.model_name || '',
+      model_name: '',
       style: 'minimal',
       extras: '',
       screenshot: false,
@@ -283,12 +312,16 @@ const NoteForm = () => {
       video_understanding: false,
       video_interval: 4,
       grid_size: [3, 3] as [number, number],
-      format: [] as string[],
+      format: [...DEFAULT_WEB_NOTE_FORMAT] as string[],
     }
 
     // No selected task (e.g. app start) -> always show a fresh form.
     if (!ingestTaskId) {
-      setUploadSuccess(false)
+      setLocalUpload({ uploading: false, done: 0, total: 0 })
+      webVideoUrlsRef.current = defaults.video_urls
+      localVideoUrlsRef.current = []
+      webFormatRef.current = [...DEFAULT_WEB_NOTE_FORMAT]
+      localFormatRef.current = [...DEFAULT_LOCAL_NOTE_FORMAT]
       form.reset(defaults)
       return
     }
@@ -301,7 +334,7 @@ const NoteForm = () => {
       // ensure fallbacks
       platform: formData.platform || defaults.platform,
       video_urls: [formData.video_url || defaults.video_urls[0] || ''],
-      model_name: formData.model_name || defaults.model_name,
+      model_name: formData.model_name || '',
       style: formData.style || defaults.style,
       quality: (formData.quality as any) || defaults.quality,
       extras: formData.extras || defaults.extras,
@@ -315,30 +348,119 @@ const NoteForm = () => {
   }, [
     // 当下面任意一个变了，就重新 reset
     ingestTaskId,
-    // modelList 用来兜底 model_name
-    modelList.length,
+    currentTask?.id,
   ])
 
   /* ---- 帮助函数 ---- */
   const isGenerating = () => !['SUCCESS', 'FAILED', 'CANCELLED', undefined].includes(getIngestTask()?.status)
   const generating = batchRunning || isGenerating()
-  const handleFileUpload = async (file: File, cb: (url: string) => void) => {
+
+  useEffect(() => {
+    if (editing) return
+    if (modelList.length === 0) return
+    const current = String(form.getValues('model_name') || '').trim()
+    if (current) return
+    form.setValue('model_name', modelList[0]?.model_name || '', { shouldDirty: false, shouldValidate: true })
+  }, [editing, modelList.length, form])
+
+  useEffect(() => {
+    if (editing) return
+    const urls = Array.isArray(watchedVideoUrls) ? watchedVideoUrls : []
+    if (videoSourceType === 'local') {
+      localVideoUrlsRef.current = urls
+      return
+    }
+
+    webVideoUrlsRef.current = urls
+  }, [editing, watchedVideoUrls, videoSourceType])
+
+  useEffect(() => {
+    if (editing) return
+    const fmt = (Array.isArray(watchedFormat) ? watchedFormat : []).map(v => String(v || '').trim()).filter(Boolean)
+    if (videoSourceType === 'local') {
+      localFormatRef.current = fmt.filter(v => v !== 'link')
+      return
+    }
+
+    webFormatRef.current = fmt
+  }, [editing, watchedFormat, videoSourceType])
+
+  const handleVideoSourceChange = (next: VideoSourceType) => {
+    if (editing) return
+    if (next === videoSourceType) return
+
+    const currentUrls = (form.getValues('video_urls') || []) as string[]
+    const currentFormat = (form.getValues('format') || []) as string[]
+    if (videoSourceType === 'local') localVideoUrlsRef.current = currentUrls
+    else webVideoUrlsRef.current = currentUrls
+    if (videoSourceType === 'local') localFormatRef.current = currentFormat.filter(v => v !== 'link')
+    else webFormatRef.current = currentFormat
+
+    if (next === 'local') {
+      form.setValue('platform', 'local', { shouldDirty: true, shouldValidate: true })
+      replaceVideoUrls(localVideoUrlsRef.current || [])
+      const nextFormat = (localFormatRef.current?.length ? localFormatRef.current : DEFAULT_LOCAL_NOTE_FORMAT).filter(
+        v => v !== 'link'
+      )
+      form.setValue('format', nextFormat, { shouldDirty: true, shouldValidate: true })
+      return
+    }
+
+    form.setValue('platform', 'bilibili', { shouldDirty: true, shouldValidate: true })
+    const nextUrls =
+      webVideoUrlsRef.current && webVideoUrlsRef.current.length > 0 ? webVideoUrlsRef.current : ['']
+    replaceVideoUrls(nextUrls)
+    const nextFormat = webFormatRef.current?.length ? webFormatRef.current : DEFAULT_WEB_NOTE_FORMAT
+    form.setValue('format', nextFormat, { shouldDirty: true, shouldValidate: true })
+  }
+
+  const uploadLocalFile = async (file: File) => {
     const formData = new FormData()
     formData.append('file', file)
-    setIsUploading(true)
-    setUploadSuccess(false)
 
-    try {
-  
-      const  data  = await uploadFile(formData)
-        cb(data.url)
-        setUploadSuccess(true)
-    } catch (err) {
-      console.error('上传失败:', err)
-      // message.error('上传失败，请重试')
-    } finally {
-      setIsUploading(false)
+    const data = await uploadFile(formData)
+    const url = String(data?.url || '').trim()
+    if (!url) throw new Error('上传失败：未返回文件地址')
+    return url
+  }
+
+  const addLocalFiles = async (files: File[]) => {
+    if (localUpload.uploading) return
+    const list = Array.from(files || []).filter(f => f && (f.type?.startsWith('video/') || f.name))
+    if (list.length === 0) return
+
+    if (editing && list.length > 1) {
+      toast.error('编辑模式暂不支持批量添加本地视频')
     }
+
+    const picked = editing ? list.slice(0, 1) : list
+    setLocalUpload({ uploading: true, done: 0, total: picked.length })
+
+    let done = 0
+    for (const file of picked) {
+      try {
+        const url = await uploadLocalFile(file)
+        appendVideoUrl(url)
+        done += 1
+        setLocalUpload({ uploading: true, done, total: picked.length })
+      } catch (err) {
+        console.error('上传失败:', err)
+        toast.error('上传失败，请重试')
+      }
+    }
+
+    setLocalUpload({ uploading: false, done, total: picked.length })
+  }
+
+  const openLocalFilePicker = () => {
+    if (localUpload.uploading) return
+    localFileInputRef.current?.click()
+  }
+
+  const onLocalFilePicked = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    void addLocalFiles(files)
   }
 
   const updateBatchItem = (id: string, patch: Partial<BatchItem>) => {
@@ -365,7 +487,7 @@ const NoteForm = () => {
       .filter(Boolean)
 
     if (urls.length === 0) {
-      toast.error(values.platform === 'local' ? '本地视频路径不能为空' : '视频链接不能为空')
+      toast.error(values.platform === 'local' ? '本地视频不能为空' : '视频链接不能为空')
       return
     }
 
@@ -421,10 +543,12 @@ const NoteForm = () => {
         continue
       }
 
-      const itemPlatform =
-        values.platform === 'local'
-          ? 'local'
-          : inferPlatformFromUrl(values.platform, item.url, autoDetectPlatform && values.platform !== 'local')
+      const itemPlatform = values.platform === 'local' ? 'local' : inferWebPlatformFromUrl(item.url)
+      if (!itemPlatform) {
+        updateBatchItem(item.id, { status: 'failed', error: '暂不支持该视频平台或链接格式无效' })
+        failed += 1
+        continue
+      }
 
       updateBatchItem(item.id, { status: 'running', platform: itemPlatform, error: undefined })
 
@@ -487,13 +611,27 @@ const NoteForm = () => {
   }
   const onInvalid = (errors: FieldErrors<NoteFormValues>) => {
     console.warn('表单校验失败：', errors)
-    // message.error('请完善所有必填项后再提交')
+    const getMessage = (v: unknown) => {
+      if (!v || typeof v !== 'object') return null
+      const msg = (v as any).message
+      return typeof msg === 'string' && msg.trim() ? msg.trim() : null
+    }
+
+    const msg =
+      getMessage((errors as any).video_urls) ||
+      getMessage((errors as any).video_urls?.[0]) ||
+      getMessage((errors as any).platform) ||
+      getMessage((errors as any).model_name) ||
+      getMessage((errors as any).style) ||
+      '请完善所有必填项后再提交'
+
+    toast.error(msg)
   }
   const handleCreateNew = () => {
     // 🔁 这里清空当前任务状态
     // 比如调用 resetCurrentTask() 或者 navigate 到一个新页面
     setIngestTask(null)
-    setUploadSuccess(false)
+    setLocalUpload({ uploading: false, done: 0, total: 0 })
     form.reset({
       platform: 'bilibili',
       quality: 'medium',
@@ -506,8 +644,12 @@ const NoteForm = () => {
       video_understanding: false,
       video_interval: 4,
       grid_size: [3, 3],
-      format: [],
+      format: [...DEFAULT_WEB_NOTE_FORMAT],
     })
+    webVideoUrlsRef.current = ['']
+    localVideoUrlsRef.current = []
+    webFormatRef.current = [...DEFAULT_WEB_NOTE_FORMAT]
+    localFormatRef.current = [...DEFAULT_LOCAL_NOTE_FORMAT]
   }
   const FormButton = () => {
     const label = generating ? '正在生成…' : editing ? '重新生成并入库' : '生成笔记并入库'
@@ -569,175 +711,157 @@ const NoteForm = () => {
           {/* 顶部按钮 */}
           <FormButton></FormButton>
 
-          {/* 视频链接 & 平台 */}
-          <SectionHeader title="视频链接" tip="支持 B 站、YouTube 等平台" />
-          <div className="flex gap-2">
-            {/* 平台选择 */}
+          {/* 视频来源 */}
+          <SectionHeader title="视频来源" tip="网页视频支持 B 站 / YouTube / 抖音 / 快手；本地支持批量导入" />
+          <Tabs
+            value={videoSourceType}
+            onValueChange={v => handleVideoSourceChange(v as VideoSourceType)}
+            className="w-full"
+          >
+            <TabsList className="w-full">
+              <TabsTrigger value="web" disabled={!!editing}>
+                网页视频
+              </TabsTrigger>
+              <TabsTrigger value="local" disabled={!!editing}>
+                本地视频
+              </TabsTrigger>
+            </TabsList>
 
-            <FormField
-              control={form.control}
-              name="platform"
-              render={({ field }) => (
-                <FormItem>
-                  <Select
-                    disabled={!!editing}
-                    value={field.value}
-                    onValueChange={field.onChange}
-                    defaultValue={field.value}
-                  >
-                    <FormControl>
-                      <SelectTrigger className="w-32">
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {videoPlatforms?.map(p => (
-                        <SelectItem key={p.value} value={p.value}>
-                          <div className="flex items-center justify-center gap-2">
-                            <div className="h-4 w-4">{p.logo()}</div>
-                            <span>{p.label}</span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormMessage style={{ display: 'none' }} />
-                </FormItem>
-              )}
-            />
-            {/* 链接输入 / 上传框 */}
-            <FormField
-              control={form.control}
-              name="video_urls.0"
-              render={({ field }) => (
-                <FormItem className="flex-1">
-                  {platform === 'local' ? (
-                    <>
-                      <Input disabled={!!editing} placeholder="请输入本地视频路径" {...field} />
-                    </>
-                  ) : (
-                    <Input disabled={!!editing} placeholder="请输入视频网站链接" {...field} />
+            <TabsContent value="web">
+              <div className="space-y-2">
+                <div className="space-y-2">
+                  {videoUrlFields.map((row, idx) => {
+                    const url = String(watchedVideoUrls?.[idx] ?? '').trim()
+                    const inferred = inferWebPlatformFromUrl(url)
+                    const meta = inferred ? getPlatformMeta(inferred) : undefined
+                    const showIcon = Boolean(meta)
+
+                    return (
+                      <div key={row.id} className="flex gap-2">
+                        <div
+                          className={`flex h-10 w-10 items-center justify-center rounded-md border border-slate-200 bg-white ${showIcon ? '' : 'invisible'}`}
+                        >
+                          <div className="h-5 w-5">{meta ? meta.logo() : null}</div>
+                        </div>
+                        <FormField
+                          control={form.control}
+                          name={`video_urls.${idx}`}
+                          render={({ field }) => (
+                            <FormItem className="flex-1">
+                              <Input disabled={!!editing} placeholder="请输入视频网站链接" {...field} />
+                              <FormMessage style={{ display: 'none' }} />
+                            </FormItem>
+                          )}
+                        />
+                        {!editing && videoUrlFields.length > 1 && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-10 w-10 px-0"
+                            onClick={() => removeVideoUrl(idx)}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    )
+                  })}
+
+                  {!editing && (
+                    <Button type="button" variant="outline" className="w-full" onClick={() => appendVideoUrl('')}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      添加网页视频
+                    </Button>
                   )}
-                  <FormMessage style={{ display: 'none' }} />
-                </FormItem>
-              )}
-            />
-          </div>
+                </div>
+              </div>
+            </TabsContent>
 
-          {platform !== 'local' && (
-            <div className="mt-2 space-y-2">
-              {videoUrlFields.slice(1).map((row, idx) => {
-                const fieldIndex = idx + 1
-                return (
-                  <div key={row.id} className="flex gap-2">
-                    <div className="w-32" />
-                    <FormField
-                      control={form.control}
-                      name={`video_urls.${fieldIndex}`}
-                      render={({ field }) => (
-                        <FormItem className="flex-1">
-                          <Input disabled={!!editing} placeholder="请输入视频网站链接" {...field} />
-                          <FormMessage style={{ display: 'none' }} />
-                        </FormItem>
-                      )}
-                    />
-                    {!editing && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-10 w-10 px-0"
-                        onClick={() => removeVideoUrl(fieldIndex)}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
+            <TabsContent value="local">
+              <div className="space-y-2">
+                <input
+                  ref={localFileInputRef}
+                  type="file"
+                  accept="video/*"
+                  multiple
+                  className="hidden"
+                  onChange={onLocalFilePicked}
+                />
+
+                {!editing && (
+                  <div
+                    className="hover:border-primary flex h-40 cursor-pointer items-center justify-center rounded-md border-2 border-dashed border-gray-300 bg-white transition-colors"
+                    onDragOver={e => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                    }}
+                    onDrop={e => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      void addLocalFiles(Array.from(e.dataTransfer.files || []))
+                    }}
+                    onClick={openLocalFilePicker}
+                  >
+                    {localUpload.uploading ? (
+                      <p className="text-center text-sm text-blue-500">
+                        上传中，请稍候…{localUpload.total > 0 ? `（${localUpload.done}/${localUpload.total}）` : ''}
+                      </p>
+                    ) : (
+                      <p className="text-center text-sm text-gray-500">
+                        拖拽多个文件到这里上传 <br />
+                        <span className="text-xs text-gray-400">或点击选择文件</span>
+                      </p>
                     )}
                   </div>
-                )
-              })}
-
-              {!editing && (
-                <div className="flex gap-2">
-                  <div className="w-32" />
-                  <Button type="button" variant="outline" className="flex-1" onClick={() => appendVideoUrl('')}>
-                    <Plus className="mr-2 h-4 w-4" />
-                    添加
-                  </Button>
-                </div>
-              )}
-
-              {!editing && (
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-                    <span className="font-medium text-slate-700">自动识别平台（按链接域名）</span>
-                    <Checkbox
-                      checked={autoDetectPlatform}
-                      onCheckedChange={checked => setAutoDetectPlatform(Boolean(checked))}
-                    />
-                  </label>
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">重复处理</div>
-                    <Select value={duplicateStrategy} onValueChange={v => setDuplicateStrategy(v as DuplicateStrategy)}>
-                      <SelectTrigger className="h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ask">每次提示</SelectItem>
-                        <SelectItem value="skip">跳过已存在</SelectItem>
-                        <SelectItem value="regenerate">直接重新生成</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          <FormField
-            control={form.control}
-            name="video_urls.0"
-            render={({ field }) => (
-              <FormItem className="flex-1">
-                {platform === 'local' && (
-                  <>
-                    <div
-                      className="hover:border-primary mt-2 flex h-40 cursor-pointer items-center justify-center rounded-md border-2 border-dashed border-gray-300 transition-colors"
-                      onDragOver={e => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                      }}
-                      onDrop={e => {
-                        e.preventDefault()
-                        const file = e.dataTransfer.files?.[0]
-                        if (file) handleFileUpload(file, field.onChange)
-                      }}
-                      onClick={() => {
-                        const input = document.createElement('input')
-                        input.type = 'file'
-                        input.accept = 'video/*'
-                        input.onchange = e => {
-                          const file = (e.target as HTMLInputElement).files?.[0]
-                          if (file) handleFileUpload(file, field.onChange)
-                        }
-                        input.click()
-                      }}
-                    >
-                      {isUploading ? (
-                        <p className="text-center text-sm text-blue-500">上传中，请稍候…</p>
-                      ) : uploadSuccess ? (
-                        <p className="text-center text-sm text-green-500">上传成功！</p>
-                      ) : (
-                        <p className="text-center text-sm text-gray-500">
-                          拖拽文件到这里上传 <br />
-                          <span className="text-xs text-gray-400">或点击选择文件</span>
-                        </p>
-                      )}
-                    </div>
-                  </>
                 )}
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+
+                {videoUrlFields.length > 0 ? (
+                  <div className="space-y-2">
+                    {videoUrlFields.map((row, idx) => {
+                      const url = String(watchedVideoUrls?.[idx] ?? '')
+                      const meta = getPlatformMeta('local')
+                      const label = getLocalFileLabel(url) || url
+
+                      return (
+                        <div key={row.id} className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2">
+                          <div className="h-5 w-5">{meta ? meta.logo() : null}</div>
+                          <div className="min-w-0 flex-1 truncate text-sm text-slate-700" title={label}>
+                            {label}
+                          </div>
+                          {!editing && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-8 w-8 px-0"
+                              onClick={() => removeVideoUrl(idx)}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-500">还没有添加本地视频</div>
+                )}
+
+                {!editing && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full"
+                    onClick={openLocalFilePicker}
+                    disabled={localUpload.uploading}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    添加本地视频
+                  </Button>
+                )}
+              </div>
+            </TabsContent>
+          </Tabs>
+
           {batchItems.length > 0 && (
             <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
               <div className="flex items-center justify-between gap-2">
@@ -756,46 +880,55 @@ const NoteForm = () => {
 
               <ScrollArea className="mt-2 h-40">
                 <div className="space-y-2 pr-2">
-                  {batchItems.map(item => (
-                    <div
-                      key={item.id}
-                      className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2"
-                    >
-                      <div className="mt-0.5">
-                        {item.status === 'running' ? (
-                          <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
-                        ) : item.status === 'success' ? (
-                          <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                        ) : item.status === 'failed' ? (
-                          <XCircle className="h-4 w-4 text-rose-600" />
-                        ) : item.status === 'skipped' ? (
-                          <PauseCircle className="h-4 w-4 text-amber-600" />
-                        ) : (
-                          <div className="h-4 w-4" />
-                        )}
-                      </div>
+                  {batchItems.map(item => {
+                    const meta = getPlatformMeta(item.platform)
+                    const platformTitle = meta?.label ? `平台：${meta.label}` : `平台：${item.platform}`
 
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="break-all text-xs font-medium text-slate-700">{item.url}</div>
-                        {item.platform ? (
-                          <div className="text-[10px] text-slate-500">平台：{item.platform}</div>
-                        ) : null}
-                        {item.error ? <div className="break-all text-xs text-rose-600">{item.error}</div> : null}
-                      </div>
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2"
+                      >
+                        <div className="mt-0.5">
+                          {item.status === 'running' ? (
+                            <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+                          ) : item.status === 'success' ? (
+                            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                          ) : item.status === 'failed' ? (
+                            <XCircle className="h-4 w-4 text-rose-600" />
+                          ) : item.status === 'skipped' ? (
+                            <PauseCircle className="h-4 w-4 text-amber-600" />
+                          ) : (
+                            <div className="h-4 w-4" />
+                          )}
+                        </div>
 
-                      <div className="shrink-0 text-[10px] text-slate-500">
-                        {item.status === 'queued'
-                          ? '等待'
-                          : item.status === 'running'
-                            ? '处理中'
-                            : item.status === 'success'
-                              ? '完成'
-                              : item.status === 'failed'
-                                ? '失败'
-                                : '已跳过'}
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="break-all text-xs font-medium text-slate-700">{item.url}</div>
+                          {item.platform ? (
+                            <div className="flex items-center text-[10px] text-slate-500" title={platformTitle}>
+                              <div className="h-3.5 w-3.5">
+                                {meta ? meta.logo() : null}
+                              </div>
+                            </div>
+                          ) : null}
+                          {item.error ? <div className="break-all text-xs text-rose-600">{item.error}</div> : null}
+                        </div>
+
+                        <div className="shrink-0 text-[10px] text-slate-500">
+                          {item.status === 'queued'
+                            ? '等待'
+                            : item.status === 'running'
+                              ? '处理中'
+                              : item.status === 'success'
+                                ? '完成'
+                                : item.status === 'failed'
+                                  ? '失败'
+                                  : '已跳过'}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </ScrollArea>
             </div>

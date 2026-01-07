@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import socket
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, validator, field_validator
 from dataclasses import asdict
+from ipaddress import ip_address
 
 from app.db.video_task_dao import get_task_by_video
 from app.enmus.exception import NoteErrorEnum
@@ -29,8 +31,9 @@ from app.models.transcriber_model import TranscriptResult, TranscriptSegment
 from app.utils.response import ResponseWrapper as R
 from app.utils.url_parser import extract_video_id
 from app.validators.video_url_validator import is_supported_video_url
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 import httpx
+from app.utils.paths import note_output_dir, uploads_dir as get_uploads_dir
 
 # from app.services.downloader import download_raw_audio
 # from app.services.whisperer import transcribe_audio
@@ -86,8 +89,42 @@ class ReingestRequest(BaseModel):
     include_note: bool = True
 
 
-NOTE_OUTPUT_DIR = os.getenv("NOTE_OUTPUT_DIR", "note_results")
-UPLOAD_DIR = "uploads"
+NOTE_OUTPUT_DIR = note_output_dir()
+UPLOAD_DIR = get_uploads_dir()
+NOTE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _task_dir(task_id: str) -> Path:
+    return NOTE_OUTPUT_DIR / str(task_id).strip()
+
+
+def _task_result_path(task_id: str) -> Path:
+    task_dir = _task_dir(task_id)
+    return task_dir / f"{task_id}.json"
+
+
+def _task_status_path(task_id: str) -> Path:
+    task_dir = _task_dir(task_id)
+    return task_dir / f"{task_id}.status.json"
+
+
+def _legacy_result_path(task_id: str) -> Path:
+    return NOTE_OUTPUT_DIR / f"{task_id}.json"
+
+
+def _legacy_status_path(task_id: str) -> Path:
+    return NOTE_OUTPUT_DIR / f"{task_id}.status.json"
+
+
+def _pick_existing_path(*candidates: Path) -> Path | None:
+    for p in candidates:
+        try:
+            if p.exists():
+                return p
+        except Exception:
+            continue
+    return None
 
 
 def _atomic_merge_json_file(path: Path, patch: dict[str, Any]) -> None:
@@ -136,12 +173,87 @@ def _extract_dify_indexing_error(payload: Any) -> Optional[str]:
     return preview
 
 
+def _is_public_ip(ip_value: str) -> bool:
+    try:
+        ip_obj = ip_address(ip_value)
+    except ValueError:
+        return False
+
+    return not (
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_link_local
+        or ip_obj.is_reserved
+        or ip_obj.is_multicast
+        or ip_obj.is_unspecified
+    )
+
+
+def _is_public_host(host: str) -> bool:
+    hostname = (host or "").strip()
+    if not hostname:
+        return False
+    if hostname.lower() in {"localhost"}:
+        return False
+
+    # IP literal
+    if _is_public_ip(hostname):
+        return True
+    try:
+        ip_address(hostname)
+        return False
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except OSError:
+        return False
+
+    addrs: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip_str = sockaddr[0]
+        if ip_str:
+            addrs.add(ip_str)
+
+    if not addrs:
+        return False
+
+    return all(_is_public_ip(ip_str) for ip_str in addrs)
+
+
+def _host_matches_allowlist(host: str, patterns: list[str]) -> bool:
+    hostname = (host or "").strip().lower().strip(".")
+    if not hostname:
+        return False
+
+    for raw in patterns:
+        p = (raw or "").strip().lower()
+        if not p:
+            continue
+        if p.startswith("*."):
+            p = p[1:]
+        if p.startswith("."):
+            suffix = p.lstrip(".")
+            if suffix and (hostname == suffix or hostname.endswith(f".{suffix}")):
+                return True
+            continue
+        if hostname == p:
+            return True
+
+    return False
+
+
 def save_note_to_file(task_id: str, note, extra: Optional[dict[str, Any]] = None):
-    os.makedirs(NOTE_OUTPUT_DIR, exist_ok=True)
+    task_dir = _task_dir(task_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
     payload = asdict(note)
     if extra:
         payload.update(extra)
-    with open(os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json"), "w", encoding="utf-8") as f:
+    with open(_task_result_path(task_id), "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
@@ -255,8 +367,9 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         finally:
             client.close()
 
-        result_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.json"
-        status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+        _task_dir(task_id).mkdir(parents=True, exist_ok=True)
+        result_path = _task_result_path(task_id)
+        status_path = _task_status_path(task_id)
         _atomic_merge_json_file(result_path, {"dify": dify_info})
         _atomic_merge_json_file(status_path, {"dify": dify_info})
         if dify_errors:
@@ -265,11 +378,11 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         else:
             logger.info(f"Uploaded to Dify (task_id={task_id})")
     except DifyError as exc:
-        status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+        status_path = _task_status_path(task_id)
         _atomic_merge_json_file(status_path, {"dify_error": str(exc)})
         logger.error(f"Dify upload failed (task_id={task_id}): {exc}")
     except Exception as exc:
-        status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+        status_path = _task_status_path(task_id)
         _atomic_merge_json_file(status_path, {"dify_error": str(exc)})
         logger.error(f"Dify upload failed (task_id={task_id}): {exc}", exc_info=True)
     finally:
@@ -288,9 +401,9 @@ def delete_task(data: RecordRequest):
             # Cooperative cancellation (background task checks this flag).
             task_manager.cancel(task_id)
 
-            status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+            status_path = _pick_existing_path(_task_status_path(task_id), _legacy_status_path(task_id))
             status = None
-            if status_path.exists():
+            if status_path and status_path.exists():
                 try:
                     status = json.loads(status_path.read_text(encoding="utf-8")).get("status")
                 except Exception:
@@ -311,14 +424,40 @@ def delete_task(data: RecordRequest):
 
 @router.post("/upload")
 async def upload(file: UploadFile = File(...)):
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    file_location = os.path.join(UPLOAD_DIR, file.filename)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    original_name = os.path.basename(file.filename or "")
+    if not original_name:
+        original_name = f"{uuid.uuid4().hex}.mp4"
 
-    with open(file_location, "wb+") as f:
-        f.write(await file.read())
+    name, ext = os.path.splitext(original_name)
+    # Sanitize for cross-platform filesystem safety.
+    name = re.sub(r'[<>:"/\\\\|?*\\x00-\\x1f]+', "_", name).strip() or uuid.uuid4().hex
+    ext = ext or ".mp4"
+    candidate = f"{name}{ext}"
+    counter = 1
+    while (UPLOAD_DIR / candidate).exists():
+        candidate = f"{name}_{counter}{ext}"
+        counter += 1
+
+    file_location = UPLOAD_DIR / candidate
+
+    try:
+        with open(file_location, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+    except Exception:
+        try:
+            if file_location.exists():
+                file_location.unlink()
+        except Exception:
+            pass
+        raise
 
     # 假设你静态目录挂载了 /uploads
-    return R.success({"url": f"/uploads/{file.filename}"})
+    return R.success({"url": f"/uploads/{candidate}"})
 
 
 @router.post("/generate_note")
@@ -461,11 +600,12 @@ def reingest_dify(data: ReingestRequest):
     if not task_id:
         return R.error("Missing task_id", code=400)
 
-    result_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.json"
-    if not result_path.exists():
+    result_path = _pick_existing_path(_task_result_path(task_id), _legacy_result_path(task_id))
+    if not result_path:
         return R.error("Note result file not found", code=404)
 
-    status_path = Path(NOTE_OUTPUT_DIR) / f"{task_id}.status.json"
+    status_path = _pick_existing_path(_task_status_path(task_id), _legacy_status_path(task_id)) or _task_status_path(task_id)
+    _task_dir(task_id).mkdir(parents=True, exist_ok=True)
 
     try:
         result_content = json.loads(result_path.read_text(encoding="utf-8"))
@@ -473,7 +613,7 @@ def reingest_dify(data: ReingestRequest):
         return R.error(f"Failed to read note result: {exc}", code=500)
 
     status_content: dict[str, Any] = {}
-    if status_path.exists():
+    if status_path and status_path.exists():
         try:
             status_content = json.loads(status_path.read_text(encoding="utf-8"))
         except Exception:
@@ -612,13 +752,12 @@ def reingest_dify(data: ReingestRequest):
 
 @router.get("/task_status/{task_id}")
 def get_task_status(task_id: str):
-    status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
-    result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+    status_path = _pick_existing_path(_task_status_path(task_id), _legacy_status_path(task_id))
+    result_path = _pick_existing_path(_task_result_path(task_id), _legacy_result_path(task_id))
 
     # 优先读状态文件
-    if os.path.exists(status_path):
-        with open(status_path, "r", encoding="utf-8") as f:
-            status_content = json.load(f)
+    if status_path and status_path.exists():
+        status_content = json.loads(status_path.read_text(encoding="utf-8"))
 
         status = status_content.get("status")
         message = status_content.get("message", "")
@@ -631,9 +770,8 @@ def get_task_status(task_id: str):
 
         if status == TaskStatus.SUCCESS.value:
             # 成功状态的话，继续读取最终笔记内容
-            if os.path.exists(result_path):
-                with open(result_path, "r", encoding="utf-8") as rf:
-                    result_content = json.load(rf)
+            if result_path and result_path.exists():
+                result_content = json.loads(result_path.read_text(encoding="utf-8"))
 
                 # If we have a Dify batch id, attach real-time indexing status.
                 dify_info = dify_info or result_content.get("dify")
@@ -716,9 +854,8 @@ def get_task_status(task_id: str):
         })
 
     # 没有状态文件，但有结果
-    if os.path.exists(result_path):
-        with open(result_path, "r", encoding="utf-8") as f:
-            result_content = json.load(f)
+    if result_path and result_path.exists():
+        result_content = json.loads(result_path.read_text(encoding="utf-8"))
         return R.success({
             "status": TaskStatus.SUCCESS.value,
             "progress": 100,
@@ -738,26 +875,56 @@ def get_task_status(task_id: str):
 
 @router.get("/image_proxy")
 async def image_proxy(request: Request, url: str):
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="Missing url")
+
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only http(s) URLs are allowed")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail="URL userinfo is not allowed")
+
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="Invalid url host")
+
+    allowlist_raw = (os.getenv("IMAGE_PROXY_ALLOWED_HOSTS") or "").strip()
+    if allowlist_raw:
+        patterns = [p.strip() for p in allowlist_raw.split(",")]
+        if not _host_matches_allowlist(host, patterns):
+            raise HTTPException(status_code=403, detail="Forbidden host")
+
+    if not _is_public_host(host):
+        raise HTTPException(status_code=403, detail="Forbidden host")
+
     headers = {
         "Referer": "https://www.bilibili.com/",
         "User-Agent": request.headers.get("User-Agent", ""),
     }
 
     try:
+        max_bytes = int(os.getenv("IMAGE_PROXY_MAX_BYTES", "10485760") or "10485760")
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(raw_url, headers=headers)
 
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail="图片获取失败")
 
             content_type = resp.headers.get("Content-Type", "image/jpeg")
-            return StreamingResponse(
-                resp.aiter_bytes(),
+            content = resp.content
+            if max_bytes > 0 and len(content) > max_bytes:
+                raise HTTPException(status_code=413, detail="Image too large")
+
+            return Response(
+                content=content,
                 media_type=content_type,
                 headers={
                     "Cache-Control": "public, max-age=86400",  #  缓存一天
                     "Content-Type": content_type,
-                }
+                },
             )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

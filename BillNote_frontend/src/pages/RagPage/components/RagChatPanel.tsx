@@ -2,17 +2,127 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { v4 as uuidv4 } from 'uuid'
 import { ChevronDown, Clock, Loader2, MessageSquare, Plus, Send, X } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
-import { ragChat } from '@/services/rag'
+import { ragChat, type RagRetrieverResource } from '@/services/rag'
 import { useRagStore, type RagChatMessage } from '@/store/ragStore'
 import { useTaskStore } from '@/store/taskStore'
 import RagConversationList from '@/pages/RagPage/components/RagConversationList'
 import { extractQueryKeywords } from '@/utils/ragKeywords'
+import { openExternalUrl } from '@/utils'
 
 const isDifyIndexingCompleted = (payload: any) => {
   const docs = payload?.data
   if (!Array.isArray(docs) || docs.length === 0) return false
   return docs.every(d => typeof d === 'object' && d && d.indexing_status === 'completed')
+}
+
+const TIME_RANGE_RE =
+  /TIME=([0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?-[0-9:]{1,2}:[0-9]{2}(?::[0-9]{2})?)/i
+
+const extractTimeRange = (text: string) => {
+  const m = TIME_RANGE_RE.exec(text)
+  return m?.[1] ?? null
+}
+
+const extractSourceUrl = (text: string) => {
+  const m = /(?:^\[?SOURCE\]=)(.+)$/im.exec(text)
+  return m?.[1]?.trim() ?? null
+}
+
+const extractPlatformVideoId = (content: string, documentName: string) => {
+  const vid = /VID=([^\]]+)/i.exec(content)?.[1]?.trim()
+  const platform = /PLATFORM=([^\]]+)/i.exec(content)?.[1]?.trim()
+  if (vid && platform) return { platform, videoId: vid }
+
+  const m = /\[([^:\]]+):([^\]]+)\]\s*$/i.exec(documentName)
+  if (m?.[1] && m?.[2]) return { platform: m[1].trim(), videoId: m[2].trim() }
+
+  return null
+}
+
+const buildSourceUrlFallback = (platform: string, videoId: string) => {
+  const p = String(platform || '').toLowerCase()
+  const v = String(videoId || '').trim()
+  if (!v) return null
+
+  if (p === 'bilibili') {
+    const m = /^(BV[0-9A-Za-z]+)(?:_p([0-9]+))?$/i.exec(v)
+    if (!m?.[1]) return `https://www.bilibili.com/video/${v}`
+    const base = m[1]
+    const part = m[2]
+    return part ? `https://www.bilibili.com/video/${base}?p=${part}` : `https://www.bilibili.com/video/${base}`
+  }
+
+  return null
+}
+
+const parseTimestampSeconds = (value: string) => {
+  const parts = String(value || '')
+    .trim()
+    .split(':')
+    .map(v => Number(v))
+  if (parts.some(v => Number.isNaN(v))) return null
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  return null
+}
+
+const buildJumpUrl = (sourceUrl: string, timeRange: string | null) => {
+  const raw = String(sourceUrl || '').trim()
+  if (!/^https?:\/\//i.test(raw)) return null
+
+  try {
+    const u = new URL(raw)
+    if (timeRange) {
+      const start = timeRange.split('-')[0]
+      const seconds = parseTimestampSeconds(start)
+      if (seconds != null) {
+        u.searchParams.set('t', String(seconds))
+      }
+    }
+    return u.toString()
+  } catch {
+    return raw
+  }
+}
+
+const buildTimeJumpIndex = (resources?: RagRetrieverResource[]) => {
+  const index = new Map<string, { jumpUrl: string; score: number }>()
+  for (const r of resources || []) {
+    const timeRange = extractTimeRange(r.content || '')
+    if (!timeRange) continue
+
+    const meta = extractPlatformVideoId(r.content || '', r.document_name || '')
+    const source =
+      extractSourceUrl(r.content || '') || (meta ? buildSourceUrlFallback(meta.platform, meta.videoId) : null)
+    if (!source) continue
+
+    const jumpUrl = buildJumpUrl(source, timeRange)
+    if (!jumpUrl) continue
+
+    const score = typeof r.score === 'number' ? r.score : Number(r.score || 0)
+    const prev = index.get(timeRange)
+    if (!prev || (Number.isFinite(score) && score > prev.score)) {
+      index.set(timeRange, { jumpUrl, score: Number.isFinite(score) ? score : 0 })
+    }
+  }
+
+  return index
+}
+
+const injectTimeLinks = (markdown: string) => {
+  const raw = String(markdown || '')
+  return raw.replace(/\[\s*TIME=([^\]]+)\s*]/gi, (full, rangeRaw, offset, str) => {
+    if (typeof offset === 'number' && typeof str === 'string') {
+      // Avoid double-wrapping when it's already a Markdown link label: `[TIME=...](...)`.
+      if (str[offset + full.length] === '(') return full
+    }
+    const timeRange = String(rangeRaw || '').trim()
+    if (!TIME_RANGE_RE.test(`TIME=${timeRange}`)) return full
+    return `[${timeRange}](#time=${encodeURIComponent(timeRange)})`
+  })
 }
 
 const RagChatPanel = () => {
@@ -240,6 +350,8 @@ const RagChatPanel = () => {
             }
 
             const isSelected = !!(currentConversationId && effectiveSelectedReferenceMessageId === m.id)
+            const timeJumpIndex = buildTimeJumpIndex(m.resources)
+            const renderedMarkdown = injectTimeLinks(m.content || '')
 
             return (
               <div key={m.id} className="flex gap-4 max-w-3xl mx-auto">
@@ -261,12 +373,111 @@ const RagChatPanel = () => {
                       }
                     }}
                     className={[
-                      'bg-white p-4 rounded-2xl rounded-tl-none border shadow-sm text-slate-700 text-sm leading-relaxed whitespace-pre-wrap cursor-pointer',
+                      'bg-white p-4 rounded-2xl rounded-tl-none border shadow-sm text-slate-700 text-sm leading-relaxed cursor-pointer',
                       isSelected ? 'border-primary/40 ring-2 ring-primary/10' : 'border-slate-200',
                     ].join(' ')}
                     title="点击查看该条回复的引用"
                   >
-                    {m.content}
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        p: ({ children, ...props }) => (
+                          <p className="whitespace-pre-wrap [&:not(:first-child)]:mt-3" {...props}>
+                            {children}
+                          </p>
+                        ),
+                        ul: ({ children, ...props }) => (
+                          <ul className="my-2 list-disc space-y-1 pl-5" {...props}>
+                            {children}
+                          </ul>
+                        ),
+                        ol: ({ children, ...props }) => (
+                          <ol className="my-2 list-decimal space-y-1 pl-5" {...props}>
+                            {children}
+                          </ol>
+                        ),
+                        li: ({ children, ...props }) => (
+                          <li className="whitespace-pre-wrap" {...props}>
+                            {children}
+                          </li>
+                        ),
+                        a: ({ href, children, ...props }) => {
+                          const rawHref = String(href || '').trim()
+                          if (rawHref.toLowerCase().startsWith('#time=')) {
+                            let timeRange = rawHref.slice('#time='.length)
+                            try {
+                              timeRange = decodeURIComponent(timeRange)
+                            } catch {
+                              // ignore
+                            }
+
+                            const jumpUrl = timeJumpIndex.get(timeRange)?.jumpUrl ?? null
+
+                            return (
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation()
+                                  if (!jumpUrl) return
+                                  void openExternalUrl(jumpUrl)
+                                }}
+                                className={[
+                                  'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold transition-colors',
+                                  jumpUrl
+                                    ? 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                                    : 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400',
+                                ].join(' ')}
+                                title={jumpUrl ? '打开原视频并跳转到该时间点' : '未找到该时间段的原视频链接'}
+                                disabled={!jumpUrl}
+                              >
+                                <Clock className="h-3.5 w-3.5" />
+                                {children}
+                              </button>
+                            )
+                          }
+
+                          return (
+                            <a
+                              href={href}
+                              onClick={e => {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                if (href) void openExternalUrl(href)
+                              }}
+                              className="text-primary hover:text-primary/80 font-medium underline underline-offset-4"
+                              {...props}
+                            >
+                              {children}
+                            </a>
+                          )
+                        },
+                        strong: ({ children, ...props }) => (
+                          <strong className="font-semibold text-slate-900" {...props}>
+                            {children}
+                          </strong>
+                        ),
+                        code: ({ className, children, ...props }) => {
+                          const isInline = !className
+                          if (isInline) {
+                            return (
+                              <code
+                                className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.85em] text-slate-800"
+                                {...props}
+                              >
+                                {children}
+                              </code>
+                            )
+                          }
+                          return (
+                            <code className={className} {...props}>
+                              {children}
+                            </code>
+                          )
+                        },
+                      }}
+                    >
+                      {renderedMarkdown}
+                    </ReactMarkdown>
                   </div>
                   <div className="flex gap-2">
                     <button

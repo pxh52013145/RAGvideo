@@ -1,12 +1,21 @@
 import os
+from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
+from app.utils.paths import backend_root, sqlite_db_path
+
 load_dotenv()
 
 # 默认 SQLite，如果想换 PostgreSQL 或 MySQL，可以直接改 .env
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bili_note.db")
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+if not DATABASE_URL:
+    DATABASE_URL = f"sqlite:///{sqlite_db_path().as_posix()}"
+elif DATABASE_URL.startswith("sqlite:///"):
+    raw_path = DATABASE_URL[len("sqlite:///") :]
+    if raw_path and not Path(raw_path).is_absolute():
+        DATABASE_URL = f"sqlite:///{(backend_root() / raw_path).resolve().as_posix()}"
 
 # SQLite 需要特定连接参数，其他数据库不需要
 engine_args = {}
