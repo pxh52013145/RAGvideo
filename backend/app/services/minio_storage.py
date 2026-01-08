@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import hashlib
 from dataclasses import dataclass
 from typing import Optional
 
@@ -69,19 +70,33 @@ _BUCKET_SAFE_RE = re.compile(r"[^a-z0-9.-]+")
 
 
 def bucket_name_for_profile(profile_name: str, *, prefix: str) -> str:
-    raw = (profile_name or "").strip().lower() or "default"
-    raw = _BUCKET_SAFE_RE.sub("-", raw)
-    raw = re.sub(r"-{2,}", "-", raw).strip("-.")
-    if not raw:
-        raw = "default"
+    original = (profile_name or "").strip()
 
-    full = f"{(prefix or '').strip().lower()}{raw}"
+    slug = (original.lower() or "default").strip()
+    slug = _BUCKET_SAFE_RE.sub("-", slug)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-.") or "default"
+
+    base = f"{(prefix or '').strip().lower()}{slug}"
+    base = _BUCKET_SAFE_RE.sub("-", base)
+    base = re.sub(r"-{2,}", "-", base).strip("-.") or "ragvideo-default"
+
+    suffix = ""
+    if original:
+        # Ensure different profiles never collide even if they slugify to the same value
+        # (e.g. Chinese names or names that differ only in punctuation).
+        suffix = f"-{hashlib.sha1(original.encode('utf-8')).hexdigest()[:8]}"
+
+    # S3 bucket constraints: 3-63 chars, lowercase letters, digits, '.' and '-'.
+    max_len = 63 - len(suffix)
+    if max_len < 3:
+        max_len = 3
+    base = base[:max_len].strip("-.") or "ragvideo-default"
+    full = f"{base}{suffix}"
     full = _BUCKET_SAFE_RE.sub("-", full)
     full = re.sub(r"-{2,}", "-", full).strip("-.")
     if not full:
         full = "ragvideo-default"
 
-    # S3 bucket constraints: 3-63 chars, lowercase letters, digits, '.' and '-'.
     full = full[:63]
     if len(full) < 3:
         full = (full + "-bin")[:3]

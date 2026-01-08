@@ -61,7 +61,7 @@ MINIO_ACCESS_KEY=ragvideo
 MINIO_SECRET_KEY=CHANGE_ME_STRONG_PASSWORD
 MINIO_SECURE=false
 
-# 按 Dify Profile 隔离 bucket：bucket = 前缀 + profile
+# 按 Dify Profile 隔离 bucket：bucket 由 profile 名称派生（S3 安全 slug + hash）+ 前缀
 MINIO_BUCKET_PREFIX=ragvideo-
 MINIO_OBJECT_PREFIX=bundles/
 MINIO_TOMBSTONE_PREFIX=tombstones/
@@ -69,8 +69,9 @@ MINIO_REGION=
 ```
 
 Bucket 规则：
-- active_profile=`default` → bucket=`ragvideo-default`
-- active_profile=`server-prod` → bucket=`ragvideo-server-prod`
+- 后端会按当前 active_profile 自动计算 bucket（S3 仅允许 `a-z0-9.-`），并追加 8 位 hash 避免不同 profile 撞名（例如中文 profile）。
+- 例如：active_profile=`default` → bucket 类似 `ragvideo-default-<hash8>`
+- 例如：active_profile=`server-prod` → bucket 类似 `ragvideo-server-prod-<hash8>`
 - 后端会自动 `ensure_bucket`，前提是该 MinIO 账号有创建 bucket 的权限（Root 用户默认有）。
 
 ### 2.3 更新后端依赖并重启服务
