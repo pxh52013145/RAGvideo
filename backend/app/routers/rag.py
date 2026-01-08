@@ -18,6 +18,19 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _should_retry_without_conversation(exc: DifyError) -> bool:
+    """
+    When the active Dify App changes (different app_api_key), existing conversation_id becomes invalid.
+    Retry once without conversation_id so the client can continue with a fresh conversation.
+    """
+    msg = str(exc).lower()
+    if "dify api error 404" in msg and "conversation" in msg:
+        return True
+    if "dify api error 400" in msg and "conversation" in msg and ("not found" in msg or "invalid" in msg):
+        return True
+    return False
+
+
 class RagChatRequest(BaseModel):
     query: str
     conversation_id: Optional[str] = None
@@ -43,12 +56,23 @@ def rag_chat(data: RagChatRequest):
     transcript_dataset_id = cfg.transcript_dataset_id or cfg.dataset_id
     client = DifyChatClient(cfg)
     try:
-        resp = client.chat(
-            query=data.query,
-            conversation_id=data.conversation_id,
-            user=data.user,
-            response_mode="blocking",
-        )
+        try:
+            resp = client.chat(
+                query=data.query,
+                conversation_id=data.conversation_id,
+                user=data.user,
+                response_mode="blocking",
+            )
+        except DifyError as exc:
+            if data.conversation_id and _should_retry_without_conversation(exc):
+                resp = client.chat(
+                    query=data.query,
+                    conversation_id=None,
+                    user=data.user,
+                    response_mode="blocking",
+                )
+            else:
+                raise
     except DifyError as exc:
         return R.error(msg=str(exc), code=500)
     finally:

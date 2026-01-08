@@ -9,7 +9,11 @@ from app.services.rag_history_manager import RagHistoryManager
 from app.utils.response import ResponseWrapper as R
 
 router = APIRouter()
-history = RagHistoryManager()
+
+
+def _history() -> RagHistoryManager:
+    # Scope history storage by (active dify_profile + active app scheme).
+    return RagHistoryManager()
 
 
 class RagStatePayload(BaseModel):
@@ -34,23 +38,23 @@ class RagMessagePayload(BaseModel):
 
 @router.get("/rag/state")
 def get_rag_state():
-    return R.success(history.get_state())
+    return R.success(_history().get_state())
 
 
 @router.post("/rag/state")
 def set_rag_state(data: RagStatePayload):
-    return R.success(history.replace_state(data.model_dump()))
+    return R.success(_history().replace_state(data.model_dump()))
 
 
 @router.put("/rag/current/{conversation_id}")
 def set_rag_current(conversation_id: str):
-    return R.success(history.set_current_conversation(conversation_id))
+    return R.success(_history().set_current_conversation(conversation_id))
 
 
 @router.put("/rag/conversations/{conversation_id}")
 def upsert_conversation(conversation_id: str, patch: RagConversationPatch):
     try:
-        conv = history.upsert_conversation(conversation_id, patch.model_dump(exclude_none=True))
+        conv = _history().upsert_conversation(conversation_id, patch.model_dump(exclude_none=True))
         return R.success(conv)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -59,7 +63,7 @@ def upsert_conversation(conversation_id: str, patch: RagConversationPatch):
 @router.post("/rag/conversations/{conversation_id}/messages")
 def append_message(conversation_id: str, msg: RagMessagePayload):
     try:
-        conv = history.append_message(conversation_id, msg.model_dump(exclude_none=True))
+        conv = _history().append_message(conversation_id, msg.model_dump(exclude_none=True))
         return R.success(conv)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -67,10 +71,9 @@ def append_message(conversation_id: str, msg: RagMessagePayload):
 
 @router.delete("/rag/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str):
-    return R.success(history.delete_conversation(conversation_id))
+    return R.success(_history().delete_conversation(conversation_id))
 
 
 @router.delete("/rag/conversations")
 def clear_conversations():
-    return R.success(history.clear())
-
+    return R.success(_history().clear())

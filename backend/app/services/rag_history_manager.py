@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,7 @@ from uuid import uuid4
 
 from filelock import FileLock
 
-from app.services.dify_config_manager import _default_config_dir
+from app.services.dify_config_manager import DifyConfigManager, _default_config_dir
 
 DEFAULT_CONVERSATION_TITLE = "新对话"
 MAX_CONVERSATIONS = 30
@@ -31,6 +32,23 @@ def _safe_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _history_context_id(profile: str, app_scheme: str) -> str:
+    raw = f"{(profile or '').strip()}\n{(app_scheme or '').strip()}".encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:12]
+
+
+def _default_history_path(*, profile: str, app_scheme: str) -> Path:
+    base = _default_config_dir()
+    prof = (profile or "").strip() or "default"
+    scheme = (app_scheme or "").strip() or "default"
+
+    # Backward compatible: keep legacy filename for the default context.
+    if prof == "default" and scheme == "default":
+        return base / "rag_history.json"
+
+    return base / f"rag_history.{_history_context_id(prof, scheme)}.json"
+
+
 class RagHistoryManager:
     """
     Persist RAG chat history locally (file-based) so the desktop EXE can keep
@@ -39,7 +57,11 @@ class RagHistoryManager:
 
     def __init__(self, filepath: str | Path | None = None):
         if filepath is None:
-            filepath = _default_config_dir() / "rag_history.json"
+            mgr = DifyConfigManager()
+            filepath = _default_history_path(
+                profile=mgr.get_active_profile(),
+                app_scheme=mgr.get_active_app_scheme(),
+            )
         self.path = Path(filepath)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = FileLock(str(self.path) + ".lock")

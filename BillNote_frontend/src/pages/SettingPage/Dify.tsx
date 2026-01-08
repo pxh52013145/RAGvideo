@@ -33,12 +33,17 @@ import {
 
 import {
   activateDifyProfile,
+  activateDifyAppScheme,
   deleteDifyProfile,
+  deleteDifyAppScheme,
+  getDifyAppSchemes,
   getDifyConfig,
   getDifyProfiles,
+  upsertDifyAppScheme,
   upsertDifyProfile,
   updateDifyConfig,
   type DifyConfigUpdateRequest,
+  type DifyAppSchemeSummary,
   type DifyProfileSummary,
 } from '@/services/dify'
 import { useSyncStore } from '@/store/syncStore'
@@ -79,6 +84,12 @@ const DifySetting = () => {
   const [saveAsOpen, setSaveAsOpen] = useState(false)
   const [saveAsName, setSaveAsName] = useState('')
 
+  const [appSchemes, setAppSchemes] = useState<DifyAppSchemeSummary[]>([])
+  const [activeAppScheme, setActiveAppScheme] = useState<string>('default')
+  const [schemeBusy, setSchemeBusy] = useState(false)
+  const [schemeCreateOpen, setSchemeCreateOpen] = useState(false)
+  const [schemeCreateName, setSchemeCreateName] = useState('')
+
   const form = useForm<DifyFormValues>({
     resolver: zodResolver(DifySchema),
     defaultValues: {
@@ -108,17 +119,21 @@ const DifySetting = () => {
     })
 
     setServiceKeyHint(cfg.service_api_key_set ? `已设置：${cfg.service_api_key_masked || ''}` : '未设置')
-    setAppKeyHint(cfg.app_api_key_set ? `已设置：${cfg.app_api_key_masked || ''}` : '未设置')
+    const schemeName = cfg.active_app_scheme ? String(cfg.active_app_scheme) : activeAppScheme
+    setActiveAppScheme(schemeName || 'default')
+    setAppKeyHint(cfg.app_api_key_set ? `已设置（App 方案：${schemeName || 'default'}）：${cfg.app_api_key_masked || ''}` : `未设置（App 方案：${schemeName || 'default'}）`)
     setConfigPath(cfg.config_path || '')
   }
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [cfg, profilePayload] = await Promise.all([getDifyConfig(), getDifyProfiles()])
+        const [cfg, profilePayload, schemePayload] = await Promise.all([getDifyConfig(), getDifyProfiles(), getDifyAppSchemes()])
         applyConfigToForm(cfg)
         setProfiles(profilePayload.profiles || [])
         setActiveProfile(profilePayload.active_profile || 'default')
+        setAppSchemes(schemePayload.schemes || [])
+        setActiveAppScheme(schemePayload.active_app_scheme || cfg.active_app_scheme || 'default')
       } catch (e: unknown) {
         toast.error('读取 Dify 配置失败')
         console.error(e)
@@ -155,6 +170,13 @@ const DifySetting = () => {
       const updated = await updateDifyConfig(patch)
       toast.success('Dify 配置已保存（立即生效）')
       applyConfigToForm(updated)
+      try {
+        const schemePayload = await getDifyAppSchemes()
+        setAppSchemes(schemePayload.schemes || [])
+        setActiveAppScheme(schemePayload.active_app_scheme || updated.active_app_scheme || 'default')
+      } catch {
+        // Ignore scheme refresh errors; config save already succeeded.
+      }
       useSyncStore.getState().scan({ silent: true })
     } catch (e: unknown) {
       toast.error('保存失败，请检查 Dify 地址/Key 是否正确')
@@ -177,13 +199,68 @@ const DifySetting = () => {
       setActiveProfile(nextProfiles.active_profile || name)
       const cfg = await getDifyConfig()
       applyConfigToForm(cfg)
+      const schemePayload = await getDifyAppSchemes()
+      setAppSchemes(schemePayload.schemes || [])
+      setActiveAppScheme(schemePayload.active_app_scheme || cfg.active_app_scheme || 'default')
       useSyncStore.getState().scan({ silent: true })
+      window.dispatchEvent(new CustomEvent('rag-context-changed'))
       toast.success(`已切换到方案：${name}`)
     } catch (e: unknown) {
       toast.error('切换方案失败')
       console.error(e)
     } finally {
       setProfileBusy(false)
+    }
+  }
+
+  const onActivateAppScheme = async (name: string) => {
+    if (!name || name === activeAppScheme) return
+
+    if (form.formState.isDirty) {
+      const ok = window.confirm('当前表单未保存，切换 App 方案会丢失修改，确定继续？')
+      if (!ok) return
+    }
+
+    setSchemeBusy(true)
+    try {
+      const schemePayload = await activateDifyAppScheme(name)
+      setAppSchemes(schemePayload.schemes || [])
+      setActiveAppScheme(schemePayload.active_app_scheme || name)
+      const cfg = await getDifyConfig()
+      applyConfigToForm(cfg)
+      window.dispatchEvent(new CustomEvent('rag-context-changed'))
+      toast.success(`已切换 App 方案：${name}`)
+    } catch (e: unknown) {
+      toast.error('切换 App 方案失败')
+      console.error(e)
+    } finally {
+      setSchemeBusy(false)
+    }
+  }
+
+  const onCreateAppScheme = async () => {
+    const name = schemeCreateName.trim()
+    if (!name) {
+      toast.error('请输入 App 方案名称')
+      return
+    }
+
+    setSchemeBusy(true)
+    try {
+      const schemePayload = await upsertDifyAppScheme({ name, activate: true })
+      setAppSchemes(schemePayload.schemes || [])
+      setActiveAppScheme(schemePayload.active_app_scheme || name)
+      const cfg = await getDifyConfig()
+      applyConfigToForm(cfg)
+      setSchemeCreateOpen(false)
+      setSchemeCreateName('')
+      window.dispatchEvent(new CustomEvent('rag-context-changed'))
+      toast.success(`已创建并启用 App 方案：${name}`)
+    } catch (e: unknown) {
+      toast.error('创建 App 方案失败')
+      console.error(e)
+    } finally {
+      setSchemeBusy(false)
     }
   }
 
@@ -210,10 +287,14 @@ const DifySetting = () => {
 
       const cfg = await getDifyConfig()
       applyConfigToForm(cfg)
+      const schemePayload = await getDifyAppSchemes()
+      setAppSchemes(schemePayload.schemes || [])
+      setActiveAppScheme(schemePayload.active_app_scheme || cfg.active_app_scheme || 'default')
       useSyncStore.getState().scan({ silent: true })
 
       setSaveAsOpen(false)
       setSaveAsName('')
+      window.dispatchEvent(new CustomEvent('rag-context-changed'))
       toast.success(`已保存并启用方案：${name}`)
     } catch (e: unknown) {
       toast.error('保存方案失败')
@@ -241,14 +322,45 @@ const DifySetting = () => {
 
       const cfg = await getDifyConfig()
       applyConfigToForm(cfg)
+      const schemePayload = await getDifyAppSchemes()
+      setAppSchemes(schemePayload.schemes || [])
+      setActiveAppScheme(schemePayload.active_app_scheme || cfg.active_app_scheme || 'default')
       useSyncStore.getState().scan({ silent: true })
 
+      window.dispatchEvent(new CustomEvent('rag-context-changed'))
       toast.success('方案已删除')
     } catch (e: unknown) {
       toast.error('删除方案失败')
       console.error(e)
     } finally {
       setProfileBusy(false)
+    }
+  }
+
+  const onDeleteActiveAppScheme = async () => {
+    if (!activeAppScheme) return
+    if ((appSchemes?.length || 0) <= 1) {
+      toast.error('至少保留一个 App 方案')
+      return
+    }
+
+    const ok = window.confirm(`确定删除 App 方案「${activeAppScheme}」？`)
+    if (!ok) return
+
+    setSchemeBusy(true)
+    try {
+      const schemePayload = await deleteDifyAppScheme(activeAppScheme)
+      setAppSchemes(schemePayload.schemes || [])
+      setActiveAppScheme(schemePayload.active_app_scheme || 'default')
+      const cfg = await getDifyConfig()
+      applyConfigToForm(cfg)
+      window.dispatchEvent(new CustomEvent('rag-context-changed'))
+      toast.success('App 方案已删除')
+    } catch (e: unknown) {
+      toast.error('删除 App 方案失败')
+      console.error(e)
+    } finally {
+      setSchemeBusy(false)
     }
   }
 
@@ -304,6 +416,45 @@ const DifySetting = () => {
                       disabled={profileBusy || (profiles?.length || 0) <= 1}
                     >
                       删除方案
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-slate-900">RAG App 方案</div>
+                    <div className="mt-2">
+                      <Select value={activeAppScheme} onValueChange={onActivateAppScheme} disabled={schemeBusy || profileBusy}>
+                        <SelectTrigger className="w-full md:w-[280px]">
+                          <SelectValue placeholder="选择 App 方案" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {appSchemes.map(s => (
+                            <SelectItem key={s.name} value={s.name}>
+                              {s.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="mt-2 text-xs text-slate-500">
+                      用于切换不同 Dify App API Key（不同 RAG 模式）；不会影响本地/MinIO 同步与对账。
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button type="button" variant="secondary" onClick={() => setSchemeCreateOpen(true)} disabled={schemeBusy || profileBusy}>
+                      新增 App 方案
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      onClick={onDeleteActiveAppScheme}
+                      disabled={schemeBusy || profileBusy || (appSchemes?.length || 0) <= 1}
+                    >
+                      删除 App 方案
                     </Button>
                   </div>
                 </div>
@@ -513,6 +664,39 @@ const DifySetting = () => {
               </Button>
               <Button type="button" onClick={onSaveAsProfile} disabled={profileBusy}>
                 保存并启用
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={schemeCreateOpen}
+          onOpenChange={open => {
+            if (!schemeBusy) setSchemeCreateOpen(open)
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>新增 App 方案</DialogTitle>
+              <DialogDescription>同一个 Dify Profile 下可配置多个 App API Key，用于切换不同 RAG 模式。</DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-2">
+              <div className="text-sm font-medium text-slate-900">App 方案名称</div>
+              <Input
+                value={schemeCreateName}
+                onChange={e => setSchemeCreateName(e.target.value)}
+                placeholder="例如：默认RAG / 多路召回 / 结构化总结"
+                disabled={schemeBusy}
+              />
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="secondary" onClick={() => setSchemeCreateOpen(false)} disabled={schemeBusy}>
+                取消
+              </Button>
+              <Button type="button" onClick={onCreateAppScheme} disabled={schemeBusy}>
+                创建并启用
               </Button>
             </DialogFooter>
           </DialogContent>

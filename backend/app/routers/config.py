@@ -100,6 +100,28 @@ class DifyProfileUpsertRequest(BaseModel):
         return str(v).strip()
 
 
+class DifyAppSchemeActivateRequest(BaseModel):
+    name: str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, v):
+        return str(v).strip() if v is not None else ""
+
+
+class DifyAppSchemeUpsertRequest(BaseModel):
+    name: str
+    app_api_key: Optional[str] = None
+    activate: bool = True
+
+    @field_validator("name", "app_api_key", mode="before")
+    @classmethod
+    def _strip_strings(cls, v):
+        if v is None:
+            return None
+        return str(v).strip()
+
+
 @router.get("/get_downloader_cookie/{platform}")
 def get_cookie(platform: str):
     cookie = cookie_manager.get(platform)
@@ -142,6 +164,7 @@ def get_dify_config():
     return R.success(
         data={
             "active_profile": persisted_safe.get("active_profile"),
+            "active_app_scheme": persisted_safe.get("active_app_scheme"),
             "base_url": cfg.base_url,
             "dataset_id": cfg.dataset_id,
             "note_dataset_id": cfg.note_dataset_id,
@@ -156,6 +179,54 @@ def get_dify_config():
             "config_path": persisted_safe.get("config_path"),
         }
     )
+
+
+@router.get("/dify_app_schemes")
+def get_dify_app_schemes():
+    """
+    List saved RAG App schemes under the active Dify profile.
+    Secrets are masked and never returned in full.
+    """
+    return R.success(data=dify_config_manager.get_app_schemes_safe())
+
+
+@router.post("/dify_app_schemes/activate")
+def activate_dify_app_scheme(data: DifyAppSchemeActivateRequest):
+    try:
+        dify_config_manager.set_active_app_scheme(data.name)
+    except ValueError as exc:
+        return R.error(msg=str(exc))
+    except KeyError as exc:
+        return R.error(msg=str(exc))
+    return R.success(data=dify_config_manager.get_app_schemes_safe())
+
+
+@router.post("/dify_app_schemes")
+def upsert_dify_app_scheme(data: DifyAppSchemeUpsertRequest):
+    if not data.name:
+        return R.error(msg="Scheme name cannot be empty")
+
+    patch = {}
+    if data.app_api_key is not None:
+        patch["app_api_key"] = data.app_api_key
+
+    try:
+        dify_config_manager.upsert_app_scheme(data.name, patch, activate=bool(data.activate))
+    except ValueError as exc:
+        return R.error(msg=str(exc))
+    except KeyError as exc:
+        return R.error(msg=str(exc))
+
+    return R.success(data=dify_config_manager.get_app_schemes_safe())
+
+
+@router.delete("/dify_app_schemes/{name}")
+def delete_dify_app_scheme(name: str):
+    try:
+        dify_config_manager.delete_app_scheme(name)
+    except ValueError as exc:
+        return R.error(msg=str(exc))
+    return R.success(data=dify_config_manager.get_app_schemes_safe())
 
 
 @router.post("/dify_config")

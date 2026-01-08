@@ -167,6 +167,17 @@ const RagChatPanel = () => {
   }, [bootstrap])
 
   useEffect(() => {
+    const handler = () => {
+      void bootstrap()
+      toast.success('RAG 配置已切换')
+    }
+    window.addEventListener('rag-context-changed', handler as any)
+    return () => {
+      window.removeEventListener('rag-context-changed', handler as any)
+    }
+  }, [bootstrap])
+
+  useEffect(() => {
     if (!initialized) return
     if (!currentConversationId && conversations.length === 0) {
       createConversation()
