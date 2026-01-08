@@ -1,7 +1,16 @@
 import { create } from 'zustand'
 import toast from 'react-hot-toast'
 
-import { syncCopy, syncDeleteRemote, syncPull, syncPush, syncScan, SyncScanItem, SyncScanResponse } from '@/services/sync'
+import {
+  syncCopy,
+  syncDeleteRemote,
+  syncItemsCached,
+  syncPull,
+  syncPush,
+  syncScan,
+  SyncScanItem,
+  SyncScanResponse,
+} from '@/services/sync'
 
 interface SyncStoreState {
   loading: boolean
@@ -11,11 +20,13 @@ interface SyncStoreState {
   items: SyncScanItem[]
   lastScannedAt: string | null
 
+  loadCached: (opts?: { silent?: boolean }) => Promise<void>
   scan: (opts?: { silent?: boolean }) => Promise<void>
   push: (item: SyncScanItem) => Promise<void>
   pull: (item: SyncScanItem, opts?: { overwrite?: boolean }) => Promise<string>
   deleteRemote: (item: SyncScanItem) => Promise<void>
   copyAsNew: (item: SyncScanItem, opts?: { fromSide?: 'local' | 'remote' }) => Promise<string>
+  reset: () => void
 }
 
 export const useSyncStore = create<SyncStoreState>((set, get) => ({
@@ -26,6 +37,25 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
   items: [],
   lastScannedAt: null,
 
+  loadCached: async (opts?: { silent?: boolean }) => {
+    set({ loading: true, error: null })
+    try {
+      const payload = (await syncItemsCached({ silent: opts?.silent ?? true })) as SyncScanResponse
+      set({
+        profile: payload?.profile || null,
+        minioBucket: payload?.minio_bucket ?? null,
+        items: Array.isArray(payload?.items) ? payload.items : [],
+        lastScannedAt: payload?.last_scanned_at ? String(payload.last_scanned_at) : null,
+      })
+    } catch (e: any) {
+      const msg = String(e?.msg || e?.message || 'åŒæ­¥çŠ¶æ€è¯»å–å¤±è´¥')
+      set({ error: msg })
+      if (!opts?.silent) toast.error(msg)
+    } finally {
+      set({ loading: false })
+    }
+  },
+
   scan: async (opts?: { silent?: boolean }) => {
     set({ loading: true, error: null })
     try {
@@ -34,7 +64,7 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
         profile: payload?.profile || null,
         minioBucket: payload?.minio_bucket ?? null,
         items: Array.isArray(payload?.items) ? payload.items : [],
-        lastScannedAt: new Date().toISOString(),
+        lastScannedAt: payload?.last_scanned_at ? String(payload.last_scanned_at) : new Date().toISOString(),
       })
     } catch (e: any) {
       const msg = String(e?.msg || e?.message || '同步扫描失败')
@@ -112,5 +142,16 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
     toast.success('已另存为副本')
     await get().scan({ silent: true })
     return taskId
+  },
+
+  reset: () => {
+    set({
+      loading: false,
+      error: null,
+      profile: null,
+      minioBucket: null,
+      items: [],
+      lastScannedAt: null,
+    })
   },
 }))

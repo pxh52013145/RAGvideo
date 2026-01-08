@@ -1,7 +1,15 @@
 # 本地 <-> Dify 知识库对账/同步（MinIO 原文真源）部署说明
 
+## 0. Phase plan（按 MVP → 完整）& 进度
+- Phase 0（规范）：`source_key` / bundle 结构 / hash / DB 按 `dify_profile` 分区 ✅
+- Phase 1（MinIO 真源）：bundle 上传/下载/校验 + `/sync/push`、`/sync/pull` ✅
+- Phase 2（对账扫描）：本地扫描 + Dify 文档列表 + 状态计算 + 落 SQLite ✅
+- Phase 3（前端入口）：知识库页标签/按钮（入库/获取/补全/冲突/删除）+ 手动刷新扫描 ✅
+- Phase 4（可选策略）：冲突处理（本地覆盖/云端覆盖/另存副本）+ 远端 tombstone 删除 ✅
+
 ## 1. 你会得到什么
-- 启动/切换 Dify Profile 后自动对账：`LOCAL_ONLY`（本地有）、`DIFY_ONLY`（Dify 有）、`DIFY_ONLY_NO_BUNDLE`（远端缺包）、`SYNCED`、`PARTIAL`（部分同步）、`CONFLICT`（冲突）、`DELETED`（墓碑删除）、`DIFY_ONLY_LEGACY`
+- 进入“知识库”页会读取上次对账缓存；点击右上角刷新执行对账扫描：`LOCAL_ONLY`（本地有）、`DIFY_ONLY`（Dify 有）、`DIFY_ONLY_NO_BUNDLE`（远端缺包）、`SYNCED`、`PARTIAL`（部分同步）、`CONFLICT`（冲突）、`DELETED`（墓碑删除）、`DIFY_ONLY_LEGACY`
+- 默认不自动“入库/同步”：生成笔记只落本地；需要你手动点“入库(push) / 获取(pull)”决定同步方向
 - `LOCAL_ONLY/PARTIAL` 可点“入库”：上传原文包到 MinIO + 写入/补齐当前 Dify 数据集
 - `DIFY_ONLY/PARTIAL` 可点“获取/补全”：从 MinIO 拉取原文包到本地（只补缺失文件，避免重复生成本地条目）
 - `CONFLICT` 可点“本地覆盖 / 云端覆盖 / 另存副本”：用 hash 判断不一致，并提供可控的覆盖/保留策略
@@ -97,7 +105,14 @@ python backend/main.py
 - `base_url`
 - `dataset_id`（以及可选的 `note_dataset_id` / `transcript_dataset_id`）
 - `service_api_key`（写入知识库必须）
-- 保存后会触发一次同步扫描
+- 保存后不会自动扫描；请在“知识库”页手动点击右上角刷新执行对账
+
+### 2.5（可选）开启“生成后自动入库/上传”
+默认推荐保持关闭（更稳、更可控）。如你确认 Dify/MinIO 配置稳定，可在后端 `.env` 开启：
+```env
+AUTO_MINIO_BUNDLE_ON_GENERATE=true
+AUTO_DIFY_INGEST_ON_GENERATE=true
+```
 
 ## 3. 验证方式
 
@@ -120,7 +135,24 @@ curl -X POST http://<backend-host>:8483/api/sync/scan
 - `DIFY_ONLY_NO_BUNDLE` 表示 Dify 里有条目，但 MinIO 缺原文包：无法“获取”，需要在拥有本地原文的设备上点一次“入库/补传”。
 - `DELETED` 表示该条目在当前 Profile 已被 tombstone 标记删除；如需恢复，请在拥有本地原文的设备重新入库。
 
-## 5. 排错（Dify 文档索引 error）
+## 5. 清理本地知识库（彻底删除）
+只“删本地”不会影响 Dify/MinIO；你会在对账里看到 `DIFY_ONLY`（这是正常的多人/多设备同步场景）。
+
+如果你要彻底清空本机本地库（不删远端），请删除：
+- `backend/note_results`（笔记/字幕/音频元数据/状态文件）
+- `backend/static/screenshots`（截图缓存，取决于 `OUT_DIR`）
+- `backend/uploads`（上传的原始文件，取决于 `UPLOAD_DIR`）
+- `backend/bili_note.db`（SQLite：任务/对账缓存等，取决于 `SQLITE_DB_PATH`）
+
+另外：前端列表在浏览器/桌面端会有本地缓存（localStorage）。如果你清空了后端目录但前端还显示旧记录，请在前端点“删本地”，或清空浏览器站点数据/应用数据后重启。
+
+## 6. DIFY(旧) / DIFY_ONLY_LEGACY 怎么处理？
+这不是服务器问题：它表示 Dify 里存在旧格式文档（名称里没有 `[platform:video_id:created_at_ms]` tag），无法与本地/MinIO 建立稳定映射。
+处理建议（最稳）：
+- 如果不再需要：直接在 Dify 控制台删除这些旧文档；或用“删远端”逐条清理
+- 如果需要纳入新同步体系：从拥有本地原文的设备对同一条目重新“入库/补传”，让它生成新格式文档与 MinIO bundle
+
+## 7. 排错（Dify 文档索引 error）
 如果你在 Dify 的 Dataset 文档列表里看到 `indexing_status=error`，常见原因是 **Embedding 服务不可达**（例如报错里出现 `...:11434/api/embed` 超时）。
 
 推荐做法（最稳）：把 Ollama 跑在 **同一个 docker-compose 网络**，并在 Dify 里把 Embedding Base URL 配成 `http://ollama:11434`。

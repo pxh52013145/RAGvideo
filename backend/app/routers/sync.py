@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -118,6 +119,16 @@ def _read_local_payloads(item) -> tuple[dict[str, Any] | None, dict[str, Any] | 
     return audio_json, transcript_json, note_markdown
 
 
+def _read_local_request_meta(item) -> dict[str, Any] | None:
+    for p in (getattr(item, "result_path", None), getattr(item, "status_path", None)):
+        if not isinstance(p, Path) or not p.exists():
+            continue
+        payload = _read_json(p)
+        if isinstance(payload, dict) and isinstance(payload.get("request"), dict):
+            return payload.get("request") or {}
+    return None
+
+
 def _sync_bucket(profile_name: str) -> tuple[MinioStorage, str]:
     cfg = MinioConfig.from_env()
     storage = MinioStorage(cfg)
@@ -165,6 +176,17 @@ class SyncScanItem(BaseModel):
     note_sha256_remote: Optional[str] = None
     transcript_sha256_local: Optional[str] = None
     transcript_sha256_remote: Optional[str] = None
+
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    if not isinstance(dt, datetime):
+        return None
+    try:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return None
 
 
 @router.post("/sync/scan")
@@ -338,12 +360,15 @@ def sync_scan():
 
             # Deterministic bundle hash (for conflict detection / idempotency hints).
             try:
+                request_meta = _read_local_request_meta(local)
+                extra_meta = {"request": request_meta} if isinstance(request_meta, dict) and request_meta else None
                 bundle = build_bundle_zip(
                     source_key=source_key,
                     sync_id=sync_id or compute_sync_id(source_key),
                     audio=audio_json if isinstance(audio_json, dict) else None,
                     note_markdown=note_markdown if local_has_note else None,
                     transcript=transcript_json if local_has_transcript and isinstance(transcript_json, dict) else None,
+                    extra_meta=extra_meta,
                 )
                 bundle_sha256_local = hashlib.sha256(bundle).hexdigest()
             except Exception:
@@ -529,6 +554,150 @@ def sync_scan():
     )
 
 
+@router.get("/sync/items")
+def sync_items_cached():
+    """
+    Return last scanned items from local SQLite (no Dify/MinIO calls).
+    Also merges current local files (NOTE_OUTPUT_DIR) to avoid stale local flags.
+    """
+    cfg = DifyConfig.from_env()
+    profile = DifyConfigManager().get_active_profile()
+    note_dataset_id = (cfg.note_dataset_id or cfg.dataset_id).strip()
+    transcript_dataset_id = (cfg.transcript_dataset_id or cfg.dataset_id).strip()
+
+    note_dir = note_output_dir()
+    local_items = scan_local_notes(note_dir)
+    local_by_source: dict[str, Any] = {i.source_key: i for i in local_items if i.source_key}
+
+    bucket: str | None = None
+    try:
+        minio_cfg = MinioConfig.from_env()
+        bucket = bucket_name_for_profile(profile, prefix=minio_cfg.bucket_prefix)
+    except Exception:
+        bucket = None
+
+    def _local_flags(local) -> tuple[Optional[str], Optional[bool], Optional[bool]]:
+        if not local:
+            return None, None, None
+        local_has_note = False
+        local_has_transcript = False
+        try:
+            if local.markdown_path and local.markdown_path.exists() and local.markdown_path.stat().st_size > 0:
+                local_has_note = True
+        except Exception:
+            local_has_note = False
+        try:
+            if local.transcript_path and local.transcript_path.exists() and local.transcript_path.stat().st_size > 0:
+                local_has_transcript = True
+        except Exception:
+            local_has_transcript = False
+        if (not local_has_note or not local_has_transcript) and local.result_path and local.result_path.exists():
+            res = _read_json(local.result_path) or {}
+            if not local_has_note:
+                md = res.get("markdown")
+                local_has_note = isinstance(md, str) and bool(md.strip())
+            if not local_has_transcript:
+                local_has_transcript = isinstance(res.get("transcript"), dict)
+        return local.task_id, local_has_note, local_has_transcript
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    last_scanned_at: datetime | None = None
+
+    try:
+        db = next(get_db())
+    except Exception:
+        db = None
+
+    try:
+        rows = db.query(SyncItem).filter(SyncItem.profile == profile).all() if db is not None else []
+        for row in rows:
+            sk = str(getattr(row, "source_key", "") or "").strip()
+            if not sk:
+                continue
+            seen.add(sk)
+            sid = str(getattr(row, "sync_id", "") or "").strip() or compute_sync_id(sk)
+            local = local_by_source.get(sk)
+            local_task_id, local_has_note, local_has_transcript = _local_flags(local)
+
+            dt = getattr(row, "updated_at", None)
+            if isinstance(dt, datetime):
+                last_scanned_at = dt if last_scanned_at is None or dt > last_scanned_at else last_scanned_at
+
+            merged.append(
+                {
+                    "status": str(getattr(row, "status", "") or ""),
+                    "title": str(getattr(row, "title", "") or "") or (local.title if local else ""),
+                    "platform": str(getattr(row, "platform", "") or "") or (local.platform if local else ""),
+                    "video_id": str(getattr(row, "video_id", "") or "") or (local.video_id if local else ""),
+                    "created_at_ms": getattr(row, "created_at_ms", None) if isinstance(getattr(row, "created_at_ms", None), int) else (local.created_at_ms if local else None),
+                    "source_key": sk,
+                    "sync_id": sid,
+                    "local_task_id": local_task_id,
+                    "local_has_note": local_has_note,
+                    "local_has_transcript": local_has_transcript,
+                    "dify_note_document_id": getattr(row, "dify_note_document_id", None),
+                    "dify_note_name": getattr(row, "dify_note_name", None),
+                    "dify_transcript_document_id": getattr(row, "dify_transcript_document_id", None),
+                    "dify_transcript_name": getattr(row, "dify_transcript_name", None),
+                    "remote_has_note": getattr(row, "remote_has_note", None),
+                    "remote_has_transcript": getattr(row, "remote_has_transcript", None),
+                    "minio_bundle_exists": getattr(row, "minio_bundle_exists", None),
+                    "minio_tombstone_exists": getattr(row, "minio_tombstone_exists", None),
+                    "bundle_sha256_local": getattr(row, "bundle_sha256_local", None),
+                    "bundle_sha256_remote": getattr(row, "bundle_sha256_remote", None),
+                    "note_sha256_local": getattr(row, "note_sha256_local", None),
+                    "note_sha256_remote": getattr(row, "note_sha256_remote", None),
+                    "transcript_sha256_local": getattr(row, "transcript_sha256_local", None),
+                    "transcript_sha256_remote": getattr(row, "transcript_sha256_remote", None),
+                }
+            )
+    finally:
+        try:
+            if db is not None:
+                db.close()
+        except Exception:
+            pass
+
+    # Add new local items not seen in last scan.
+    for sk, local in local_by_source.items():
+        if sk in seen:
+            continue
+        local_task_id, local_has_note, local_has_transcript = _local_flags(local)
+        merged.append(
+            {
+                "status": "LOCAL_ONLY",
+                "title": local.title,
+                "platform": local.platform,
+                "video_id": local.video_id,
+                "created_at_ms": local.created_at_ms,
+                "source_key": sk,
+                "sync_id": local.sync_id,
+                "local_task_id": local_task_id,
+                "local_has_note": local_has_note,
+                "local_has_transcript": local_has_transcript,
+                "remote_has_note": False,
+                "remote_has_transcript": False,
+                "minio_bundle_exists": None,
+                "minio_tombstone_exists": None,
+            }
+        )
+
+    merged.sort(key=lambda x: int(x.get("created_at_ms") or 0), reverse=True)
+
+    return R.success(
+        data={
+            "profile": profile,
+            "dify_base_url": cfg.base_url,
+            "note_dataset_id": note_dataset_id,
+            "transcript_dataset_id": transcript_dataset_id,
+            "minio_bucket": bucket,
+            "last_scanned_at": _iso_utc(last_scanned_at),
+            "items": [SyncScanItem.model_validate(x).model_dump() for x in merged],
+        }
+    )
+
+
 class SyncPushRequest(BaseModel):
     item_id: str
     include_transcript: bool = True
@@ -575,12 +744,15 @@ def sync_push(data: SyncPushRequest):
         return R.error(msg=str(exc), code=500)
 
     object_key = _bundle_object_key(storage, sync_id=sync_id)
+    request_meta = _read_local_request_meta(local)
+    extra_meta = {"request": request_meta} if isinstance(request_meta, dict) and request_meta else None
     bundle = build_bundle_zip(
         source_key=source_key,
         sync_id=sync_id,
         audio=audio_json,
         note_markdown=note_markdown if data.include_note else None,
         transcript=transcript_json if data.include_transcript else None,
+        extra_meta=extra_meta,
     )
 
     bundle_sha256 = hashlib.sha256(bundle).hexdigest()
@@ -825,6 +997,7 @@ def sync_pull(data: SyncPullRequest):
     except Exception as exc:
         return R.error(msg=f"Invalid bundle zip: {exc}", code=500)
 
+    request_meta: dict[str, Any] | None = None
     if isinstance(meta_json, dict):
         bundle_source_key = str(meta_json.get("source_key") or "").strip()
         bundle_sync_id = str(meta_json.get("sync_id") or "").strip()
@@ -832,6 +1005,8 @@ def sync_pull(data: SyncPullRequest):
             return R.error(msg="Bundle sync_id mismatch", code=500)
         if bundle_source_key and bundle_source_key != source_key:
             return R.error(msg="Bundle source_key mismatch", code=400)
+        if isinstance(meta_json.get("request"), dict):
+            request_meta = meta_json.get("request") or {}
 
     # Parse source_key => stable created_at_ms for local meta.
     created_at_ms: Optional[int] = None
@@ -907,6 +1082,7 @@ def sync_pull(data: SyncPullRequest):
         "markdown": note_md,
         "transcript": transcript_json,
         "audio_meta": audio_json,
+        "request": request_meta if isinstance(request_meta, dict) else None,
         "sync": {"source_key": source_key, "sync_id": sync_id, "created_at_ms": created_at_ms},
         "dify": {"base_url": cfg.base_url},
     }
@@ -918,6 +1094,7 @@ def sync_pull(data: SyncPullRequest):
         "status": "SUCCESS",
         "progress": 100,
         "message": "",
+        "request": request_meta if isinstance(request_meta, dict) else None,
         "sync": {"source_key": source_key, "sync_id": sync_id, "created_at_ms": created_at_ms},
         "dify": {"base_url": cfg.base_url},
         "dify_error": None,
@@ -987,6 +1164,7 @@ def sync_copy(data: SyncCopyRequest):
     audio_json: dict[str, Any] | None = None
     transcript_json: dict[str, Any] | None = None
     note_markdown = ""
+    request_meta: dict[str, Any] | None = None
 
     if from_side == "local":
         local_item = None
@@ -1002,6 +1180,7 @@ def sync_copy(data: SyncCopyRequest):
             return R.error(msg="Local item not found for source_key", code=404)
 
         audio_json, transcript_json, note_markdown = _read_local_payloads(local_item)
+        request_meta = _read_local_request_meta(local_item)
         if not isinstance(audio_json, dict):
             return R.error(msg="Missing local audio metadata", code=400)
     else:
@@ -1019,9 +1198,13 @@ def sync_copy(data: SyncCopyRequest):
 
         try:
             with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as zf:
+                meta_raw = zf.read("meta.json").decode("utf-8", errors="replace") if "meta.json" in zf.namelist() else "{}"
                 note_markdown = zf.read("note.md").decode("utf-8", errors="replace") if "note.md" in zf.namelist() else ""
                 transcript_raw = zf.read("transcript.json").decode("utf-8", errors="replace") if "transcript.json" in zf.namelist() else "{}"
                 audio_raw = zf.read("audio.json").decode("utf-8", errors="replace") if "audio.json" in zf.namelist() else "{}"
+            meta_json = json.loads(meta_raw) if meta_raw.strip() else {}
+            if isinstance(meta_json, dict) and isinstance(meta_json.get("request"), dict):
+                request_meta = meta_json.get("request") or {}
             transcript_json = json.loads(transcript_raw) if transcript_raw.strip() else {}
             audio_json = json.loads(audio_raw) if audio_raw.strip() else {}
         except Exception as exc:
@@ -1065,12 +1248,14 @@ def sync_copy(data: SyncCopyRequest):
     if not new_source_key or not new_sync_id:
         return R.error(msg="Failed to generate unique copy id", code=500)
 
+    extra_meta = {"request": request_meta} if isinstance(request_meta, dict) and request_meta else None
     bundle = build_bundle_zip(
         source_key=new_source_key,
         sync_id=new_sync_id,
         audio=audio_json,
         note_markdown=note_markdown if data.include_note else None,
         transcript=transcript_json if data.include_transcript else None,
+        extra_meta=extra_meta,
     )
     bundle_sha256 = hashlib.sha256(bundle).hexdigest()
 
@@ -1129,6 +1314,7 @@ def sync_copy(data: SyncCopyRequest):
         "markdown": (note_markdown or "").lstrip("\ufeff") if data.include_note else "",
         "transcript": transcript_json if data.include_transcript else {},
         "audio_meta": audio_json,
+        "request": request_meta if isinstance(request_meta, dict) else None,
         "sync": {"source_key": new_source_key, "sync_id": new_sync_id, "created_at_ms": created_at_ms},
         "dify": {"base_url": cfg.base_url},
     }
@@ -1138,6 +1324,7 @@ def sync_copy(data: SyncCopyRequest):
         "status": "SUCCESS",
         "progress": 100,
         "message": "",
+        "request": request_meta if isinstance(request_meta, dict) else None,
         "sync": {"source_key": new_source_key, "sync_id": new_sync_id, "created_at_ms": created_at_ms},
         "dify": {"base_url": cfg.base_url},
         "dify_error": None,

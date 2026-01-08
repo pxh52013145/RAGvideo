@@ -37,12 +37,18 @@ export interface SyncScanResponse {
   note_dataset_id: string
   transcript_dataset_id: string
   minio_bucket?: string | null
+  last_scanned_at?: string | null
   items: SyncScanItem[]
 }
 
 export const syncScan = async (opts?: { silent?: boolean }) => {
   const config: RequestConfig | undefined = opts?.silent ? { silent: true } : undefined
   return await request.post('/sync/scan', {}, config)
+}
+
+export const syncItemsCached = async (opts?: { silent?: boolean }) => {
+  const config: RequestConfig | undefined = opts?.silent ? { silent: true } : undefined
+  return await request.get('/sync/items', config)
 }
 
 export const syncPush = async (

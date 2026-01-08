@@ -345,6 +345,29 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         task_manager.ensure(task_id)
         created_at_ms = int(time.time() * 1000)
 
+        request_meta = {
+            "video_url": str(video_url or ""),
+            "platform": str(platform or ""),
+            "quality": getattr(quality, "value", None) or str(quality or ""),
+            "link": bool(link),
+            "screenshot": bool(screenshot),
+            "model_name": str(model_name or ""),
+            "provider_id": str(provider_id or ""),
+            "format": list(_format or []),
+            "style": str(style or ""),
+            "extras": str(extras or ""),
+            "video_understanding": bool(video_understanding),
+            "video_interval": int(video_interval or 0),
+            "grid_size": list(grid_size or []),
+        }
+
+        # Persist request meta early so UI can show model/style even after restart (or while still running).
+        try:
+            _task_dir(task_id).mkdir(parents=True, exist_ok=True)
+            _atomic_merge_json_file(_task_status_path(task_id), {"request": request_meta})
+        except Exception:
+            pass
+
         generator = NoteGenerator()
         note = generator.generate(
             video_url=video_url,
@@ -382,7 +405,8 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
                     "created_at_ms": created_at_ms,
                     "source_key": source_key,
                     "sync_id": sync_id,
-                }
+                },
+                "request": request_meta,
             },
         )
         try:
@@ -397,109 +421,125 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
         except Exception:
             pass
 
-        # Best-effort upload bundle to MinIO (source-of-truth for multi-device sync).
-        try:
-            minio_cfg = MinioConfig.from_env()
-            storage = MinioStorage(minio_cfg)
-            profile = DifyConfigManager().get_active_profile()
-            bucket = bucket_name_for_profile(profile, prefix=minio_cfg.bucket_prefix)
-            object_key = f"{minio_cfg.object_prefix}{sync_id}.zip"
-            bundle = build_bundle_zip(
-                source_key=source_key,
-                sync_id=sync_id,
-                audio=asdict(note.audio_meta),
-                note_markdown=note.markdown,
-                transcript=asdict(note.transcript),
-            )
-            storage.put_bytes(bucket=bucket, object_key=object_key, data=bundle, content_type="application/zip")
-        except MinioConfigError:
-            pass
-        except Exception as exc:
-            logger.warning("MinIO bundle upload failed: %s", exc)
+        auto_minio = str(os.getenv("AUTO_MINIO_BUNDLE_ON_GENERATE", "false") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        auto_dify = str(os.getenv("AUTO_DIFY_INGEST_ON_GENERATE", "false") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
-        # Upload transcript + note to Dify Knowledge Base for RAG (separate datasets).
-        dify_cfg = DifyConfig.from_env()
-        client = DifyKnowledgeClient(dify_cfg)
-        try:
-            base_name = build_rag_document_name(note.audio_meta, platform, created_at_ms=created_at_ms)
-            transcript_dataset_id = (dify_cfg.transcript_dataset_id or dify_cfg.dataset_id).strip()
-            note_dataset_id = (dify_cfg.note_dataset_id or dify_cfg.dataset_id).strip()
+        # Optional: upload bundle to MinIO (source-of-truth for multi-device sync).
+        if auto_minio:
+            try:
+                minio_cfg = MinioConfig.from_env()
+                storage = MinioStorage(minio_cfg)
+                profile = DifyConfigManager().get_active_profile()
+                bucket = bucket_name_for_profile(profile, prefix=minio_cfg.bucket_prefix)
+                object_key = f"{minio_cfg.object_prefix}{sync_id}.zip"
+                bundle = build_bundle_zip(
+                    source_key=source_key,
+                    sync_id=sync_id,
+                    audio=asdict(note.audio_meta),
+                    note_markdown=note.markdown,
+                    transcript=asdict(note.transcript),
+                    extra_meta={"request": request_meta},
+                )
+                storage.put_bytes(bucket=bucket, object_key=object_key, data=bundle, content_type="application/zip")
+            except MinioConfigError:
+                pass
+            except Exception as exc:
+                logger.warning("MinIO bundle upload failed: %s", exc)
 
-            dify_info: dict[str, Any] = {
-                "base_url": dify_cfg.base_url,
-                "transcript": None,
-                "note": None,
-            }
-            dify_errors: dict[str, str] = {}
+        # Optional: upload transcript + note to Dify Knowledge Base for RAG (separate datasets).
+        if auto_dify:
+            dify_cfg = DifyConfig.from_env()
+            client = DifyKnowledgeClient(dify_cfg)
+            try:
+                base_name = build_rag_document_name(note.audio_meta, platform, created_at_ms=created_at_ms)
+                transcript_dataset_id = (dify_cfg.transcript_dataset_id or dify_cfg.dataset_id).strip()
+                note_dataset_id = (dify_cfg.note_dataset_id or dify_cfg.dataset_id).strip()
 
-            if transcript_dataset_id:
-                try:
-                    transcript_name = f"{base_name} (transcript)"
-                    transcript_text = build_rag_document_text(
-                        audio=note.audio_meta,
-                        transcript=note.transcript,
-                        platform=platform,
-                        source_url=video_url,
-                    )
-                    resp_transcript = client.create_document_by_text(
-                        dataset_id=transcript_dataset_id,
-                        name=transcript_name,
-                        text=transcript_text,
-                        doc_language="Chinese Simplified",
-                    )
-                    doc_transcript = resp_transcript.get("document") or {}
-                    dify_info["transcript"] = {
-                        "dataset_id": transcript_dataset_id,
-                        "document_id": doc_transcript.get("id"),
-                        "batch": resp_transcript.get("batch"),
-                    }
-                    # Backward-compatible primary fields (use transcript).
-                    dify_info["dataset_id"] = transcript_dataset_id
-                    dify_info["document_id"] = doc_transcript.get("id")
-                    dify_info["batch"] = resp_transcript.get("batch")
-                except DifyError as exc:
-                    dify_errors["transcript"] = str(exc)
+                dify_info: dict[str, Any] = {
+                    "base_url": dify_cfg.base_url,
+                    "transcript": None,
+                    "note": None,
+                }
+                dify_errors: dict[str, str] = {}
+
+                if transcript_dataset_id:
+                    try:
+                        transcript_name = f"{base_name} (transcript)"
+                        transcript_text = build_rag_document_text(
+                            audio=note.audio_meta,
+                            transcript=note.transcript,
+                            platform=platform,
+                            source_url=video_url,
+                        )
+                        resp_transcript = client.create_document_by_text(
+                            dataset_id=transcript_dataset_id,
+                            name=transcript_name,
+                            text=transcript_text,
+                            doc_language="Chinese Simplified",
+                        )
+                        doc_transcript = resp_transcript.get("document") or {}
+                        dify_info["transcript"] = {
+                            "dataset_id": transcript_dataset_id,
+                            "document_id": doc_transcript.get("id"),
+                            "batch": resp_transcript.get("batch"),
+                        }
+                        # Backward-compatible primary fields (use transcript).
+                        dify_info["dataset_id"] = transcript_dataset_id
+                        dify_info["document_id"] = doc_transcript.get("id")
+                        dify_info["batch"] = resp_transcript.get("batch")
+                    except DifyError as exc:
+                        dify_errors["transcript"] = str(exc)
+                else:
+                    dify_errors["transcript"] = "Missing transcript dataset id"
+
+                if note_dataset_id:
+                    try:
+                        note_name = f"{base_name} (note)"
+                        note_text = build_rag_note_document_text(
+                            audio=note.audio_meta,
+                            platform=platform,
+                            source_url=video_url,
+                            note_markdown=note.markdown,
+                        )
+                        resp_note = client.create_document_by_text(
+                            dataset_id=note_dataset_id,
+                            name=note_name,
+                            text=note_text,
+                            doc_language="Chinese Simplified",
+                        )
+                        doc_note = resp_note.get("document") or {}
+                        dify_info["note"] = {
+                            "dataset_id": note_dataset_id,
+                            "document_id": doc_note.get("id"),
+                            "batch": resp_note.get("batch"),
+                        }
+                    except DifyError as exc:
+                        dify_errors["note"] = str(exc)
+                else:
+                    dify_errors["note"] = "Missing note dataset id"
+            finally:
+                client.close()
+
+            _task_dir(task_id).mkdir(parents=True, exist_ok=True)
+            result_path = _task_result_path(task_id)
+            status_path = _task_status_path(task_id)
+            _atomic_merge_json_file(result_path, {"dify": dify_info})
+            _atomic_merge_json_file(status_path, {"dify": dify_info})
+            if dify_errors:
+                _atomic_merge_json_file(status_path, {"dify_error": json.dumps(dify_errors, ensure_ascii=False)})
+                logger.error(f"Dify upload partially failed (task_id={task_id}): {dify_errors}")
             else:
-                dify_errors["transcript"] = "Missing transcript dataset id"
-
-            if note_dataset_id:
-                try:
-                    note_name = f"{base_name} (note)"
-                    note_text = build_rag_note_document_text(
-                        audio=note.audio_meta,
-                        platform=platform,
-                        source_url=video_url,
-                        note_markdown=note.markdown,
-                    )
-                    resp_note = client.create_document_by_text(
-                        dataset_id=note_dataset_id,
-                        name=note_name,
-                        text=note_text,
-                        doc_language="Chinese Simplified",
-                    )
-                    doc_note = resp_note.get("document") or {}
-                    dify_info["note"] = {
-                        "dataset_id": note_dataset_id,
-                        "document_id": doc_note.get("id"),
-                        "batch": resp_note.get("batch"),
-                    }
-                except DifyError as exc:
-                    dify_errors["note"] = str(exc)
-            else:
-                dify_errors["note"] = "Missing note dataset id"
-        finally:
-            client.close()
-
-        _task_dir(task_id).mkdir(parents=True, exist_ok=True)
-        result_path = _task_result_path(task_id)
-        status_path = _task_status_path(task_id)
-        _atomic_merge_json_file(result_path, {"dify": dify_info})
-        _atomic_merge_json_file(status_path, {"dify": dify_info})
-        if dify_errors:
-            _atomic_merge_json_file(status_path, {"dify_error": json.dumps(dify_errors, ensure_ascii=False)})
-            logger.error(f"Dify upload partially failed (task_id={task_id}): {dify_errors}")
-        else:
-            logger.info(f"Uploaded to Dify (task_id={task_id})")
+                logger.info(f"Uploaded to Dify (task_id={task_id})")
     except DifyError as exc:
         status_path = _task_status_path(task_id)
         _atomic_merge_json_file(status_path, {"dify_error": str(exc)})
@@ -915,6 +955,7 @@ def get_task_status(task_id: str):
         message = status_content.get("message", "")
         dify_info = status_content.get("dify")
         dify_error = status_content.get("dify_error")
+        request_meta = status_content.get("request") if isinstance(status_content.get("request"), dict) else None
         progress = status_content.get("progress")
         if not isinstance(progress, (int, float)):
             progress = TaskStatus.progress(status)
@@ -924,6 +965,9 @@ def get_task_status(task_id: str):
             # 成功状态的话，继续读取最终笔记内容
             if result_path and result_path.exists():
                 result_content = json.loads(result_path.read_text(encoding="utf-8"))
+                request_effective = request_meta
+                if request_effective is None and isinstance(result_content, dict) and isinstance(result_content.get("request"), dict):
+                    request_effective = result_content.get("request")
 
                 # If we have a Dify batch id, attach real-time indexing status.
                 dify_info = dify_info or result_content.get("dify")
@@ -981,6 +1025,7 @@ def get_task_status(task_id: str):
                     "dify": dify_info,
                     "dify_indexing": dify_indexing,
                     "dify_error": dify_error,
+                    "request": request_effective,
                     "task_id": task_id
                 })
             else:
@@ -988,6 +1033,7 @@ def get_task_status(task_id: str):
                 return R.success({
                     "status": TaskStatus.PENDING.value,
                     "progress": progress,
+                    "request": request_meta,
                     "message": "任务完成，但结果文件未找到",
                     "task_id": task_id
                 })
@@ -999,6 +1045,7 @@ def get_task_status(task_id: str):
         return R.success({
             "status": status,
             "progress": progress,
+            "request": request_meta,
             "message": message,
             "dify": dify_info,
             "dify_error": dify_error,
@@ -1013,6 +1060,7 @@ def get_task_status(task_id: str):
             "progress": 100,
             "result": result_content,
             "dify": result_content.get("dify"),
+            "request": result_content.get("request") if isinstance(result_content.get("request"), dict) else None,
             "task_id": task_id
         })
 

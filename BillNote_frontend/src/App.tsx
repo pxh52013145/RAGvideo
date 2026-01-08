@@ -36,7 +36,8 @@ function App() {
       useTaskStore.getState().setCurrentTask(null)
       useTaskStore.getState().setIngestTask(null)
       systemCheck()
-      useSyncStore.getState().scan({ silent: true })
+      // Load last scanned items from local cache (no remote scan unless user clicks refresh).
+      useSyncStore.getState().loadCached({ silent: true })
     }
   }, [initialized])
 

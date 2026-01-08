@@ -233,6 +233,38 @@ export const useTaskStore = create<TaskStore>()(
             grid_size: [],
           }
 
+          const requestMeta =
+            (res.request && typeof res.request === 'object' ? res.request : null) ||
+            (result.request && typeof result.request === 'object' ? result.request : null) ||
+            null
+
+          const mergedFormData: Task['formData'] = {
+            ...defaultFormData,
+            video_url: typeof requestMeta?.video_url === 'string' ? requestMeta.video_url : defaultFormData.video_url,
+            platform:
+              typeof requestMeta?.platform === 'string'
+                ? requestMeta.platform
+                : defaultFormData.platform || audioMeta.platform || '',
+            quality: typeof requestMeta?.quality === 'string' ? requestMeta.quality : defaultFormData.quality,
+            model_name:
+              typeof requestMeta?.model_name === 'string' ? requestMeta.model_name : defaultFormData.model_name,
+            provider_id:
+              typeof requestMeta?.provider_id === 'string' ? requestMeta.provider_id : defaultFormData.provider_id,
+            format: Array.isArray(requestMeta?.format) ? requestMeta.format : defaultFormData.format,
+            style: typeof requestMeta?.style === 'string' ? requestMeta.style : defaultFormData.style,
+            extras: typeof requestMeta?.extras === 'string' ? requestMeta.extras : defaultFormData.extras,
+            link: typeof requestMeta?.link === 'boolean' ? requestMeta.link : defaultFormData.link,
+            screenshot:
+              typeof requestMeta?.screenshot === 'boolean' ? requestMeta.screenshot : defaultFormData.screenshot,
+            video_understanding:
+              typeof requestMeta?.video_understanding === 'boolean'
+                ? requestMeta.video_understanding
+                : defaultFormData.video_understanding,
+            video_interval:
+              typeof requestMeta?.video_interval === 'number' ? requestMeta.video_interval : defaultFormData.video_interval,
+            grid_size: Array.isArray(requestMeta?.grid_size) ? requestMeta.grid_size : defaultFormData.grid_size,
+          }
+
           const patch: Partial<Task> = {
             status,
             progress,
@@ -244,6 +276,7 @@ export const useTaskStore = create<TaskStore>()(
             transcript: (transcript ?? existing?.transcript) as any,
             audioMeta,
             platform: audioMeta.platform || existing?.platform || '',
+            formData: mergedFormData,
           }
 
           if (existing) {
@@ -271,7 +304,7 @@ export const useTaskStore = create<TaskStore>()(
             dify_indexing: patch.dify_indexing,
             dify_error: patch.dify_error,
             createdAt: new Date().toISOString(),
-            formData: defaultFormData,
+            formData: mergedFormData,
           }
 
           return { ...state, tasks: [newTask, ...state.tasks] }

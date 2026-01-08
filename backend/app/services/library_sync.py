@@ -351,6 +351,7 @@ def build_bundle_zip(
     audio: dict[str, Any] | None,
     note_markdown: str | None,
     transcript: dict[str, Any] | None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> bytes:
     """
     Build a deterministic zip bundle so hashing/idempotency and cross-device equality checks are stable.
@@ -448,6 +449,9 @@ def build_bundle_zip(
         },
         "content_sha256": content_sha256,
     }
+    if isinstance(extra_meta, dict) and extra_meta:
+        # Keep meta extensible for cross-device sync (e.g. store request parameters).
+        meta.update(extra_meta)
 
     def _zipinfo(name: str) -> zipfile.ZipInfo:
         info = zipfile.ZipInfo(name)

@@ -39,11 +39,7 @@ export const useTaskPolling = (interval = 3000) => {
         if (task.status === 'FAILED' || task.status === 'CANCELLED') return false
         if (task.status !== 'SUCCESS') return true
         if (task.dify_error) return false
-        if (!task.dify?.batch) {
-          // Note generation may finish before Dify upload info is written back.
-          // Keep polling until we either get a Dify batch id or a dify_error.
-          return true
-        }
+        if (!task.dify?.batch) return false
         if (getDifyIndexingError(task.dify_indexing)) return false
         return !isDifyIndexingCompleted(task.dify_indexing)
       })
