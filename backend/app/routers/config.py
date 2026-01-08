@@ -55,6 +55,51 @@ class DifyConfigUpdateRequest(BaseModel):
         return str(v).strip()
 
 
+class DifyProfileActivateRequest(BaseModel):
+    name: str
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, v):
+        return str(v).strip() if v is not None else ""
+
+
+class DifyProfileUpsertRequest(BaseModel):
+    name: str
+    clone_from: Optional[str] = None
+    activate: bool = True
+
+    # Same config fields as DifyConfigUpdateRequest (None means "don't touch").
+    base_url: Optional[str] = None
+    dataset_id: Optional[str] = None
+    note_dataset_id: Optional[str] = None
+    transcript_dataset_id: Optional[str] = None
+    service_api_key: Optional[str] = None
+    app_api_key: Optional[str] = None
+    app_user: Optional[str] = None
+    indexing_technique: Optional[str] = None
+    timeout_seconds: Optional[float] = None
+
+    @field_validator(
+        "name",
+        "clone_from",
+        "base_url",
+        "dataset_id",
+        "note_dataset_id",
+        "transcript_dataset_id",
+        "service_api_key",
+        "app_api_key",
+        "app_user",
+        "indexing_technique",
+        mode="before",
+    )
+    @classmethod
+    def _strip_strings(cls, v):
+        if v is None:
+            return None
+        return str(v).strip()
+
+
 @router.get("/get_downloader_cookie/{platform}")
 def get_cookie(platform: str):
     cookie = cookie_manager.get(platform)
@@ -96,6 +141,7 @@ def get_dify_config():
 
     return R.success(
         data={
+            "active_profile": persisted_safe.get("active_profile"),
             "base_url": cfg.base_url,
             "dataset_id": cfg.dataset_id,
             "note_dataset_id": cfg.note_dataset_id,
@@ -136,3 +182,72 @@ def update_dify_config(data: DifyConfigUpdateRequest):
 
     dify_config_manager.update(patch)
     return get_dify_config()
+
+
+@router.get("/dify_profiles")
+def get_dify_profiles():
+    """
+    List saved Dify config profiles. Secrets are masked.
+    """
+    return R.success(data=dify_config_manager.get_profiles_safe())
+
+
+@router.post("/dify_profiles/activate")
+def activate_dify_profile(data: DifyProfileActivateRequest):
+    try:
+        dify_config_manager.set_active_profile(data.name)
+    except ValueError as exc:
+        return R.error(msg=str(exc))
+    except KeyError as exc:
+        return R.error(msg=str(exc))
+    return R.success(data=dify_config_manager.get_profiles_safe())
+
+
+@router.post("/dify_profiles")
+def upsert_dify_profile(data: DifyProfileUpsertRequest):
+    if not data.name:
+        return R.error(msg="Profile name cannot be empty")
+
+    patch = {}
+    for k in (
+        "base_url",
+        "dataset_id",
+        "note_dataset_id",
+        "transcript_dataset_id",
+        "service_api_key",
+        "app_api_key",
+        "app_user",
+        "indexing_technique",
+        "timeout_seconds",
+    ):
+        v = getattr(data, k)
+        if v is None:
+            continue
+        patch[k] = v
+
+    clone_from = data.clone_from
+    if clone_from is None:
+        clone_from = dify_config_manager.get_active_profile()
+
+    try:
+        dify_config_manager.upsert_profile(
+            data.name,
+            patch,
+            clone_from=clone_from,
+            activate=bool(data.activate),
+        )
+    except ValueError as exc:
+        return R.error(msg=str(exc))
+    except KeyError as exc:
+        return R.error(msg=str(exc))
+
+    return R.success(data=dify_config_manager.get_profiles_safe())
+
+
+@router.delete("/dify_profiles/{name}")
+def delete_dify_profile(name: str):
+    try:
+        dify_config_manager.delete_profile(name)
+    except ValueError as exc:
+        return R.error(msg=str(exc))
+    return R.success(data=dify_config_manager.get_profiles_safe())

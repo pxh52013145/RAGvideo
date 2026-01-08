@@ -140,6 +140,9 @@ class DifyHttpClient:
             body = resp.content.decode("utf-8", errors="replace")
             raise DifyError(f"Dify API error {resp.status_code}: {body}")
 
+        if not resp.content or not resp.content.strip():
+            return {}
+
         try:
             # Avoid resp.text encoding heuristics; Dify responses are JSON (UTF-8).
             return jsonlib.loads(resp.content)
@@ -276,6 +279,23 @@ class DifyKnowledgeClient:
         return self._http._request(
             "GET",
             f"/datasets/{dataset}/documents/{batch}/indexing-status",
+            api_key=self._config.service_api_key,
+        )
+
+    def delete_document(self, *, dataset_id: Optional[str] = None, document_id: str) -> dict[str, Any]:
+        dataset = (dataset_id or self._config.dataset_id).strip() if (dataset_id or self._config.dataset_id) else ""
+        if not dataset:
+            raise DifyError("Missing Dify dataset id (set DIFY_DATASET_ID or per-call dataset_id)")
+        if not self._config.service_api_key:
+            raise DifyError("Missing DIFY_SERVICE_API_KEY")
+
+        doc_id = str(document_id or "").strip()
+        if not doc_id:
+            raise DifyError("Missing Dify document id")
+
+        return self._http._request(
+            "DELETE",
+            f"/datasets/{dataset}/documents/{doc_id}",
             api_key=self._config.service_api_key,
         )
 

@@ -380,3 +380,48 @@ Dify Chat API 的 blocking 返回中包含 `metadata.retriever_resources`（引�
 - 1/4（中期）：前端对话页可用，返回引用片段与时间戳；准备 3 分钟 demo
 - 1/8：云上可访问 URL + 一键 docker compose；移动端适配基本可用
 - 1/9（结题）：完整演示 + 打包提交
+
+---
+
+## 11. 本地 <-> Dify 知识库对账/同步（MinIO 原文真源）（已落地进度）
+
+### 11.1 背景
+- 每次启动/切换 Dify Profile，需要对“本地库 vs 当前 Dify 数据集”做一次对账，否则“已入库”标记会串库。
+- 多人共用服务器 Dify 时，Dify 可能多于任一本地；需要支持从远端拉取，做到多端一致。
+- 仅靠向量库分段无法 100% 还原原始笔记结构，因此选用 MinIO 作为“原文真源”，Dify 负责索引与检索。
+
+### 11.2 核心设计（稳定可对账）
+- 标识：`source_key = platform:video_id:created_at_ms`；`sync_id = sha256(source_key)`
+  - 同一 `platform:video_id` 允许多次生成，用 `created_at_ms` 区分版本/批次（满足“同一视频多份笔记”）。
+- 存储隔离：MinIO 全局一套服务，但按 Dify Profile 分 Bucket：`bucket = MINIO_BUCKET_PREFIX + <active_profile>`
+- Dify 文档命名：`<title> [platform:video_id:created_at_ms] (note|transcript)`（便于 `list_documents` 直接解析出 `source_key`）
+
+### 11.3 对账状态（UI 标签）
+- `LOCAL_ONLY`：本地有 / Dify 无 -> 显示“本地”，提供“入库”入口（上传原文包 + 写入当前 Dify）
+- `DIFY_ONLY`：Dify 有 / 本地无 -> 显示“DIFY”，提供“获取”入口（从 MinIO 拉取原文包到本地）
+- `DIFY_ONLY_NO_BUNDLE`：Dify 有 / MinIO 缺原文包 -> 显示“DIFY(缺包)”，无法获取；需在有本地原文的设备上点一次“入库/补传”
+- `PARTIAL`：两边都有但不完整 -> 显示“部分”，可“入库”补齐远端缺项，或“补全”拉取本地缺项（默认只补缺失文件）
+- `CONFLICT`：两边都有且都完整，但内容 hash 不一致 -> 显示“冲突”，提供“本地覆盖/云端覆盖/另存副本”
+- `SYNCED`：两边都有 -> 显示“已同步”
+- `DELETED`：远端已写入 tombstone -> 显示“已删除”，用于多端同步删除（可在有本地原文的设备重新入库恢复）
+- `DIFY_ONLY_LEGACY`：Dify 旧格式文档（无 `created_at_ms` tag）-> 显示“DIFY(旧)”，暂不支持自动获取
+
+### 11.4 Phase Plan & 进度
+- Phase 0（0.5 天）定规范（MVP 前置）— Completed  
+  - `source_key = platform:video_id:created_at_ms`；`sync_id = sha256(source_key)`  
+  - bundle：`meta.json + note.md + transcript.json + transcript.srt (+ audio.json)`，zip 构建为“确定性输出”，用于稳定 hash  
+  - MinIO object key：`MINIO_OBJECT_PREFIX + <sync_id>.zip`（不依赖 Dify metadata）  
+  - DB：`sync_items` 表按 `dify_profile` 维度落库（避免 dify1/dify2 串库）
+- Phase 1（1 天）打通 MinIO「原文真源」— Completed  
+  - `/api/sync/push`：本地→MinIO（幂等：同 `bundle_sha256` 不重复上传）+ 写入/更新 Dify 文档  
+  - `/api/sync/pull`：MinIO→本地（校验 `bundle_sha256`；默认只补缺失文件，`overwrite=true` 可强制覆盖）
+- Phase 2（1 天）实现对账扫描 — Completed  
+  - `/api/sync/scan`：扫本地 + 扫 Dify 文档列表 + 查 MinIO bundle/tombstone → 计算状态（含 `CONFLICT`/`DIFY_ONLY_NO_BUNDLE`）  
+  - 扫描结果落 SQLite（`sync_items`），前端可直接渲染
+- Phase 3（0.5–1 天）前端渲染 + 入口 — Completed  
+  - 启动/切换 profile 自动 scan；列表/详情展示标签与入口（入库/获取/补全）
+- Phase 4（可选，0.5–1 天）冲突与删除策略 — Completed  
+  - 冲突：本地覆盖 / 云端覆盖 / 另存为副本  
+  - 删除：支持“删本地 / 删远端（tombstone + 尝试删 Dify）”，多人共用场景用 tombstone 防误删
+
+> 服务器部署与配置说明见 `doc/library_sync.md`

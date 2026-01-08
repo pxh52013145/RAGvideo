@@ -23,6 +23,7 @@ import { useCheckBackend } from '@/hooks/useCheckBackend.ts'
 import BackendInitDialog from '@/components/BackendInitDialog'
 import RagPage from '@/pages/RagPage/Rag.tsx'
 import AppShellLayout from '@/layouts/AppShellLayout'
+import { useSyncStore } from '@/store/syncStore'
 
 function App() {
   useTaskPolling(3000) // 每 3 秒轮询一次
@@ -35,6 +36,7 @@ function App() {
       useTaskStore.getState().setCurrentTask(null)
       useTaskStore.getState().setIngestTask(null)
       systemCheck()
+      useSyncStore.getState().scan({ silent: true })
     }
   }, [initialized])
 

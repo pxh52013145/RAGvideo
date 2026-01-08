@@ -2,7 +2,10 @@
 import json
 import os
 import re
+import shutil
 import socket
+import stat
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -13,12 +16,15 @@ from pydantic import BaseModel, validator, field_validator
 from dataclasses import asdict
 from ipaddress import ip_address
 
-from app.db.video_task_dao import get_task_by_video
+from app.db.video_task_dao import delete_task_by_task_id, get_task_by_video
 from app.enmus.exception import NoteErrorEnum
 from app.enmus.note_enums import DownloadQuality
 from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.note import NoteError
 from app.services.dify_client import DifyConfig, DifyError, DifyKnowledgeClient
+from app.services.dify_config_manager import DifyConfigManager
+from app.services.library_sync import build_bundle_zip, compute_sync_id, ensure_local_sync_meta, make_source_key
+from app.services.minio_storage import MinioConfig, MinioConfigError, MinioStorage, bucket_name_for_profile
 from app.services.note import NoteGenerator, logger
 from app.services.task_manager import task_manager
 from app.services.rag_service import (
@@ -140,6 +146,75 @@ def _atomic_merge_json_file(path: Path, patch: dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _delete_task_files(task_id: str) -> None:
+    tid = (task_id or "").strip()
+    if not tid:
+        return
+
+    # New format: NOTE_OUTPUT_DIR/<task_id>/...
+    task_dir = _task_dir(tid)
+    if task_dir.exists() and task_dir.is_dir():
+        def _on_rm_error(func, path, exc_info):  # noqa: ANN001
+            try:
+                os.chmod(path, stat.S_IWRITE)
+                func(path)
+            except Exception:
+                pass
+
+        try:
+            shutil.rmtree(task_dir, onerror=_on_rm_error)
+        except Exception:
+            # Fall back to manual cleanup (best-effort).
+            try:
+                for p in sorted(task_dir.rglob("*"), key=lambda x: len(str(x)), reverse=True):
+                    try:
+                        if p.is_file() or p.is_symlink():
+                            os.chmod(p, stat.S_IWRITE)
+                            p.unlink(missing_ok=True)
+                        elif p.is_dir():
+                            p.rmdir()
+                    except Exception:
+                        pass
+                try:
+                    task_dir.rmdir()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        if task_dir.exists():
+            raise RuntimeError(f"Failed to delete local task dir: {task_dir}")
+
+    # Legacy flat files: NOTE_OUTPUT_DIR/<task_id>*
+    legacy_candidates = [
+        NOTE_OUTPUT_DIR / f"{tid}.json",
+        NOTE_OUTPUT_DIR / f"{tid}.status.json",
+        NOTE_OUTPUT_DIR / f"{tid}.sync.json",
+        NOTE_OUTPUT_DIR / f"{tid}_audio.json",
+        NOTE_OUTPUT_DIR / f"{tid}_transcript.json",
+        NOTE_OUTPUT_DIR / f"{tid}_markdown.md",
+        NOTE_OUTPUT_DIR / f"{tid}_markdown.status.json",
+    ]
+    leftover: list[str] = []
+    for p in legacy_candidates:
+        try:
+            if p.exists() and p.is_file():
+                try:
+                    os.chmod(p, stat.S_IWRITE)
+                except Exception:
+                    pass
+                p.unlink()
+        except Exception:
+            try:
+                if p.exists():
+                    leftover.append(str(p))
+            except Exception:
+                pass
+
+    if leftover:
+        raise RuntimeError(f"Failed to delete local task files: {', '.join(leftover[:3])}")
 
 
 def _extract_dify_indexing_error(payload: Any) -> Optional[str]:
@@ -268,6 +343,7 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
 
     try:
         task_manager.ensure(task_id)
+        created_at_ms = int(time.time() * 1000)
 
         generator = NoteGenerator()
         note = generator.generate(
@@ -292,13 +368,60 @@ def run_note_task(task_id: str, video_url: str, platform: str, quality: Download
             return
 
         # Always save note results locally first.
-        save_note_to_file(task_id, note)
+        source_key = make_source_key(
+            platform=platform,
+            video_id=str(getattr(note.audio_meta, "video_id", "") or ""),
+            created_at_ms=created_at_ms,
+        )
+        sync_id = compute_sync_id(source_key)
+        save_note_to_file(
+            task_id,
+            note,
+            extra={
+                "sync": {
+                    "created_at_ms": created_at_ms,
+                    "source_key": source_key,
+                    "sync_id": sync_id,
+                }
+            },
+        )
+        try:
+            ensure_local_sync_meta(
+                note_dir=NOTE_OUTPUT_DIR,
+                task_id=task_id,
+                platform=platform,
+                video_id=str(getattr(note.audio_meta, "video_id", "") or ""),
+                title=str(getattr(note.audio_meta, "title", "") or ""),
+                prefer_created_at_ms=created_at_ms,
+            )
+        except Exception:
+            pass
+
+        # Best-effort upload bundle to MinIO (source-of-truth for multi-device sync).
+        try:
+            minio_cfg = MinioConfig.from_env()
+            storage = MinioStorage(minio_cfg)
+            profile = DifyConfigManager().get_active_profile()
+            bucket = bucket_name_for_profile(profile, prefix=minio_cfg.bucket_prefix)
+            object_key = f"{minio_cfg.object_prefix}{sync_id}.zip"
+            bundle = build_bundle_zip(
+                source_key=source_key,
+                sync_id=sync_id,
+                audio=asdict(note.audio_meta),
+                note_markdown=note.markdown,
+                transcript=asdict(note.transcript),
+            )
+            storage.put_bytes(bucket=bucket, object_key=object_key, data=bundle, content_type="application/zip")
+        except MinioConfigError:
+            pass
+        except Exception as exc:
+            logger.warning("MinIO bundle upload failed: %s", exc)
 
         # Upload transcript + note to Dify Knowledge Base for RAG (separate datasets).
         dify_cfg = DifyConfig.from_env()
         client = DifyKnowledgeClient(dify_cfg)
         try:
-            base_name = build_rag_document_name(note.audio_meta, platform)
+            base_name = build_rag_document_name(note.audio_meta, platform, created_at_ms=created_at_ms)
             transcript_dataset_id = (dify_cfg.transcript_dataset_id or dify_cfg.dataset_id).strip()
             note_dataset_id = (dify_cfg.note_dataset_id or dify_cfg.dataset_id).strip()
 
@@ -413,9 +536,14 @@ def delete_task(data: RecordRequest):
             if status not in (TaskStatus.SUCCESS.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value):
                 NoteGenerator()._update_status(task_id, TaskStatus.CANCELLED, message="任务已取消")
 
+            # Best-effort local cleanup (files on disk).
+            _delete_task_files(task_id)
+
         # Best-effort DB cleanup for completed tasks (video_id may be empty while running).
         if data.video_id and data.platform:
             NoteGenerator().delete_note(video_id=data.video_id, platform=data.platform)
+        elif task_id:
+            delete_task_by_task_id(task_id)
 
         return R.success(msg='删除成功')
     except Exception as e:
@@ -634,7 +762,31 @@ def reingest_dify(data: ReingestRequest):
     dify_cfg = DifyConfig.from_env()
     client = DifyKnowledgeClient(dify_cfg)
     try:
-        base_name = build_rag_document_name(audio, platform)
+        created_at_ms: int | None = None
+        sync_info = result_content.get("sync") if isinstance(result_content.get("sync"), dict) else {}
+        raw_created_at = sync_info.get("created_at_ms")
+        if raw_created_at is not None:
+            try:
+                created_at_ms = int(raw_created_at)
+            except (TypeError, ValueError):
+                created_at_ms = None
+
+        try:
+            meta = ensure_local_sync_meta(
+                note_dir=NOTE_OUTPUT_DIR,
+                task_id=task_id,
+                platform=platform,
+                video_id=str(audio.video_id or ""),
+                title=str(audio.title or ""),
+                prefer_created_at_ms=created_at_ms,
+            )
+            v = meta.get("created_at_ms")
+            if isinstance(v, int) and v > 0:
+                created_at_ms = v
+        except Exception:
+            pass
+
+        base_name = build_rag_document_name(audio, platform, created_at_ms=created_at_ms)
         transcript_dataset_id = (dify_cfg.transcript_dataset_id or dify_cfg.dataset_id).strip()
         note_dataset_id = (dify_cfg.note_dataset_id or dify_cfg.dataset_id).strip()
 

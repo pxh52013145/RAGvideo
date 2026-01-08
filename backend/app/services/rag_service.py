@@ -112,10 +112,13 @@ def _merge_transcript_segments_by_chars(
     return merged
 
 
-def build_rag_document_name(audio: AudioDownloadResult, platform: str) -> str:
+def build_rag_document_name(audio: AudioDownloadResult, platform: str, created_at_ms: int | None = None) -> str:
     safe_title = (audio.title or "").strip() or "Untitled"
     safe_video_id = (audio.video_id or "").strip() or "unknown"
-    return f"{safe_title} [{platform}:{safe_video_id}]"
+    tag = f"{platform}:{safe_video_id}"
+    if isinstance(created_at_ms, int) and created_at_ms > 0:
+        tag = f"{tag}:{created_at_ms}"
+    return f"{safe_title} [{tag}]"
 
 
 def build_rag_note_document_text(
@@ -414,12 +417,14 @@ def _split_video_doc_tag(name: str) -> tuple[str, str, str] | None:
     left = n.rfind("[", 0, right)
     if left < 0:
         return None
-    tag = n[left + 1 : right]
+    tag = n[left + 1 : right].strip()
     if ":" not in tag:
         return None
-    platform, video_id = tag.split(":", 1)
-    platform = platform.strip()
-    video_id = video_id.strip()
+    parts = [p.strip() for p in tag.split(":")]
+    if len(parts) < 2:
+        return None
+    platform = parts[0]
+    video_id = parts[1]
     if not platform or not video_id:
         return None
     title = n[:left].strip()

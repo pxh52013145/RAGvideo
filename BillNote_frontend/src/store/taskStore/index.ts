@@ -98,6 +98,7 @@ interface TaskStore {
   ingestTaskId: string | null
   addPendingTask: (taskId: string, platform: string, formData: Task['formData']) => void
   updateTaskContent: (id: string, data: Partial<Omit<Task, 'id' | 'createdAt'>>) => void
+  upsertTaskFromBackend: (id: string, payload: any) => void
   removeTask: (id: string) => Promise<void>
   clearTasks: () => void
   setCurrentTask: (taskId: string | null) => void
@@ -192,6 +193,89 @@ export const useTaskStore = create<TaskStore>()(
               return { ...task, ...data }
             }),
           })),
+
+      upsertTaskFromBackend: (id: string, payload: any) =>
+        set(state => {
+          const taskId = String(id || '').trim()
+          if (!taskId) return state
+
+          const existing = state.tasks.find(t => t.id === taskId) || null
+          const res = (payload && typeof payload === 'object' ? payload : {}) as any
+          const status = String(res.status || existing?.status || 'SUCCESS')
+          const progress =
+            typeof res.progress === 'number' && Number.isFinite(res.progress)
+              ? Math.max(0, Math.min(100, Math.round(res.progress)))
+              : existing?.progress ?? 100
+
+          const result = (res.result && typeof res.result === 'object' ? res.result : {}) as any
+          const audio = (result.audio_meta && typeof result.audio_meta === 'object' ? result.audio_meta : {}) as any
+          const transcript = (result.transcript && typeof result.transcript === 'object' ? result.transcript : null) as any
+          const markdown = typeof result.markdown === 'string' ? result.markdown : existing?.markdown ?? ''
+
+          const audioMeta: AudioMeta = {
+            cover_url: String(audio.cover_url || existing?.audioMeta?.cover_url || ''),
+            duration: Number(audio.duration || existing?.audioMeta?.duration || 0),
+            file_path: String(audio.file_path || existing?.audioMeta?.file_path || ''),
+            platform: String(audio.platform || existing?.audioMeta?.platform || existing?.platform || ''),
+            raw_info: (audio.raw_info ?? existing?.audioMeta?.raw_info ?? null) as any,
+            title: String(audio.title || existing?.audioMeta?.title || ''),
+            video_id: String(audio.video_id || existing?.audioMeta?.video_id || ''),
+          }
+
+          const defaultFormData: Task['formData'] = existing?.formData || {
+            video_url: '',
+            platform: audioMeta.platform || '',
+            quality: '',
+            model_name: '',
+            provider_id: '',
+            format: [],
+            style: '',
+            grid_size: [],
+          }
+
+          const patch: Partial<Task> = {
+            status,
+            progress,
+            message: String(res.message || existing?.message || ''),
+            dify: (res.dify ?? existing?.dify) as any,
+            dify_indexing: (res.dify_indexing ?? existing?.dify_indexing) as any,
+            dify_error: (res.dify_error ?? existing?.dify_error) as any,
+            markdown,
+            transcript: (transcript ?? existing?.transcript) as any,
+            audioMeta,
+            platform: audioMeta.platform || existing?.platform || '',
+          }
+
+          if (existing) {
+            return {
+              ...state,
+              tasks: state.tasks.map(t => (t.id === taskId ? { ...t, ...patch } : t)),
+            }
+          }
+
+          const newTask: Task = {
+            id: taskId,
+            platform: patch.platform || '',
+            markdown: markdown,
+            transcript: (patch.transcript ?? {
+              full_text: '',
+              language: '',
+              raw: null,
+              segments: [],
+            }) as any,
+            status,
+            progress,
+            message: patch.message,
+            audioMeta,
+            dify: patch.dify,
+            dify_indexing: patch.dify_indexing,
+            dify_error: patch.dify_error,
+            createdAt: new Date().toISOString(),
+            formData: defaultFormData,
+          }
+
+          return { ...state, tasks: [newTask, ...state.tasks] }
+        }),
 
 
       getCurrentTask: () => {
@@ -305,14 +389,12 @@ export const useTaskStore = create<TaskStore>()(
           ingestTaskId: state.ingestTaskId === id ? null : state.ingestTaskId,
         }))
 
-        // 调用后端删除接口（如果找到了任务）
-        if (task) {
-          await delete_task({
-            task_id: task.id,
-            video_id: task.audioMeta.video_id,
-            platform: task.platform,
-          })
-        }
+        // Always call backend cleanup: the local files may exist even if the task is not in localStorage.
+        await delete_task({
+          task_id: id,
+          video_id: task?.audioMeta?.video_id || '',
+          platform: task?.platform || '',
+        })
       },
 
       clearTasks: () => set({ tasks: [], currentTaskId: null, ingestTaskId: null }),
