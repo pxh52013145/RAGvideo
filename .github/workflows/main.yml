@@ -1,67 +1,71 @@
-# .github/workflows/release.yml
+# .github/workflows/main.yml
 name: Build Desktop App (Python Backend + Tauri Frontend)
 
 on:
+  # When publishing a GitHub Release from the UI, make sure we still build correct bundles.
+  release:
+    types: [published]
+  # When pushing a tag from git, also build and upload.
   push:
     tags:
-      - 'v*' # 发布 tag 时触发
+      - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        platform: [macos-latest, windows-latest]
+        platform: [windows-latest, macos-latest]
 
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # 设置 Python 环境
+      # Required by backend build scripts (they detect target triple via `rustc -Vv`).
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      # 安装 Python 依赖并执行你的 build.sh
-      - name: Install Python dependencies & Build backend
-        shell: bash
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            backend\\build.bat
-          else
-            chmod +x backend/build.sh
-            ./backend/build.sh
-          fi
-
-      # 设置 Node 环境 + 安装前端依赖
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
-      - name: Enable Corepack + Install pnpm
+      - name: Enable Corepack + Install pnpm deps
         working-directory: BillNote_frontend
         run: |
           corepack enable
-          pnpm install 
+          pnpm install
 
-      # 设置 Rust 环境
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # 打包 Tauri 应用
       - name: Build Tauri App
         working-directory: BillNote_frontend
         run: pnpm tauri build
 
-      # 可选：上传构建产物
-      - name: Upload Desktop Bundle
+      - name: Upload Bundles to GitHub Release
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            BillNote_frontend/src-tauri/target/release/bundle/**/*
+          fail_on_unmatched_files: true
+
+      - name: Upload Bundles as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-${{ matrix.platform }}
+          name: bundles-${{ matrix.platform }}
           path: BillNote_frontend/src-tauri/target/release/bundle/

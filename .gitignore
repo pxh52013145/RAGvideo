@@ -13,6 +13,9 @@ dify_*.txt
 snapshot_*.txt
 dify_add_model.png
 
+# Large local assets (demo screenshots/videos)
+resource/
+
 # Local Dify workflow screenshots (not required to run)
 dify_workflow*.png
 backend_run.*

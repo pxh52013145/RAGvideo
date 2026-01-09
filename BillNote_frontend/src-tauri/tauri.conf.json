@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3015",
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build --mode tauri "
+    "beforeBuildCommand": "node scripts/tauri-before-build.mjs"
   },
   "app": {
     "windows": [
